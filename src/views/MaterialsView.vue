@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { createLocation, createUnit, listLocations, listMaterials, listUnits, saveMaterial, setMaterialStatus, type Location, type Material, type Unit } from '../services/masterData'
+import { createLocation, createUnit, listLocations, listMaterials, listUnits, resolveLocationChoice, resolveUnitChoice, saveMaterial, setMaterialStatus, type Location, type MasterDataChoice, type Material, type Unit } from '../services/masterData'
 import { exportMaterialRows } from '../services/export'
+import AttachmentField from '../components/AttachmentField.vue'
+import { addAttachment, listAttachments, type Attachment } from '../services/attachments'
 
 const loading = ref(false)
 const exporting = ref(false)
@@ -14,7 +16,9 @@ const units = ref<Unit[]>([])
 const locations = ref<Location[]>([])
 const dialogVisible = ref(false)
 const dialogTitle = ref('新增物资')
-const form = reactive({ id: undefined as number | undefined, name: '', unitId: undefined as number | undefined, category: '', locationId: undefined as number | undefined, remark: '' })
+const attachments = ref<Attachment[]>([])
+const pendingAttachments = ref<string[]>([])
+const form = reactive({ id: undefined as number | undefined, name: '', unitId: undefined as MasterDataChoice, category: '', locationId: undefined as MasterDataChoice, remark: '' })
 
 async function loadData(query: string) {
   ;[materials.value, units.value, locations.value] = await Promise.all([listMaterials(query), listUnits(), listLocations()])
@@ -43,14 +47,22 @@ function openCreate() {
   if (operationBusy.value) return
   Object.assign(form, { id: undefined, name: '', unitId: undefined, category: '', locationId: undefined, remark: '' })
   dialogTitle.value = '新增物资'
+  attachments.value = []
+  pendingAttachments.value = []
   dialogVisible.value = true
 }
 
-function openEdit(row: Material) {
+async function openEdit(row: Material) {
   if (operationBusy.value) return
   Object.assign(form, { id: row.id, name: row.name, unitId: row.unit_id ?? undefined, category: row.category ?? '', locationId: row.default_location_id ?? undefined, remark: row.remark ?? '' })
   dialogTitle.value = '编辑物资'
+  pendingAttachments.value = []
   dialogVisible.value = true
+  try {
+    attachments.value = await listAttachments('MATERIAL', row.id)
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : String(e))
+  }
 }
 
 async function submit() {
@@ -59,7 +71,16 @@ async function submit() {
   if (mutating.value) return
   mutating.value = true
   try {
-    await saveMaterial({ ...form })
+    const unitId = await resolveUnitChoice(form.unitId, units.value)
+    const locationId = await resolveLocationChoice(form.locationId, locations.value)
+    const result = await saveMaterial({ ...form, unitId, locationId })
+    const materialId = form.id ?? Number(result.lastInsertId)
+    form.id = materialId
+    while (pendingAttachments.value.length) {
+      const saved = await addAttachment('MATERIAL', materialId, pendingAttachments.value[0])
+      attachments.value.push(saved)
+      pendingAttachments.value.shift()
+    }
     dialogVisible.value = false
     ElMessage.success('保存成功')
     await loadData(keyword.value)
@@ -157,6 +178,7 @@ onMounted(refresh)
       <el-table-column prop="category" label="分类" min-width="130" />
       <el-table-column prop="location_name" label="默认存放位置" min-width="160" />
       <el-table-column prop="remark" label="备注" min-width="180" show-overflow-tooltip />
+      <el-table-column label="单据图片" width="100"><template #default="{ row }">{{ row.attachment_count ? `${row.attachment_count} 张` : '-' }}</template></el-table-column>
       <el-table-column label="状态" width="90"><template #default="{ row }"><el-tag :type="row.status === 1 ? 'success' : 'info'">{{ row.status === 1 ? '正常' : '停用' }}</el-tag></template></el-table-column>
       <el-table-column label="操作" width="180"><template #default="{ row }"><el-button link type="primary" :disabled="operationBusy" @click="openEdit(row)">编辑</el-button><el-button link :disabled="operationBusy" :type="row.status === 1 ? 'danger' : 'success'" @click="toggle(row)">{{ row.status === 1 ? '停用' : '启用' }}</el-button></template></el-table-column>
     </el-table>
@@ -165,10 +187,21 @@ onMounted(refresh)
   <el-dialog v-model="dialogVisible" :title="dialogTitle" width="520px" :close-on-click-modal="!mutating" :close-on-press-escape="!mutating" :show-close="!mutating">
     <el-form label-width="110px" :disabled="mutating">
       <el-form-item label="物资名称" required><el-input v-model="form.name" maxlength="100" /></el-form-item>
-      <el-form-item label="计量单位"><el-select v-model="form.unitId" clearable style="width:100%"><el-option v-for="item in units" :key="item.id" :label="item.name" :value="item.id" /></el-select></el-form-item>
+      <el-form-item label="计量单位">
+        <el-select v-model="form.unitId" clearable filterable allow-create default-first-option style="width:100%" placeholder="请选择，或输入新单位后按回车" no-data-text="输入单位名称后按回车创建">
+          <el-option v-for="item in units" :key="item.id" :label="item.name" :value="item.id" />
+        </el-select>
+      </el-form-item>
       <el-form-item label="物资分类"><el-input v-model="form.category" /></el-form-item>
-      <el-form-item label="存放位置"><el-select v-model="form.locationId" clearable style="width:100%"><el-option v-for="item in locations" :key="item.id" :label="item.name" :value="item.id" /></el-select></el-form-item>
+      <el-form-item label="存放位置">
+        <el-select v-model="form.locationId" clearable filterable allow-create default-first-option style="width:100%" placeholder="请选择，或输入新位置后按回车" no-data-text="输入位置名称后按回车创建">
+          <el-option v-for="item in locations" :key="item.id" :label="item.name" :value="item.id" />
+        </el-select>
+      </el-form-item>
       <el-form-item label="备注"><el-input v-model="form.remark" type="textarea" :rows="3" /></el-form-item>
+      <el-form-item label="单据图片">
+        <AttachmentField v-model:pending="pendingAttachments" :attachments="attachments" :disabled="mutating" @removed="id => attachments = attachments.filter(item => item.id !== id)" />
+      </el-form-item>
     </el-form>
     <template #footer><el-button :disabled="mutating" @click="dialogVisible=false">取消</el-button><el-button type="primary" :loading="mutating" :disabled="mutating" @click="submit">保存</el-button></template>
   </el-dialog>

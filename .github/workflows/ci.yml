@@ -47,6 +47,9 @@ jobs:
       - name: TypeScript and Vite build
         run: npm run build
 
+      - name: Frontend unit tests
+        run: npm test
+
       - name: Rust compile check with locked dependencies
         run: cargo check --locked --manifest-path src-tauri/Cargo.toml
 
@@ -121,7 +124,7 @@ jobs:
             "$PACKAGE" "$VERSION" "$ARCH" "$DEPENDS"
 
           test "$PACKAGE" = "kylin-stock"
-          test "$VERSION" = "0.1.1"
+          test "$VERSION" = "0.1.2"
           test "$ARCH" = "arm64"
           printf '%s\n' "$DEPENDS" | grep -F 'libwebkit2gtk-4.0-37'
           if printf '%s\n' "$DEPENDS" | grep -F 'libwebkit2gtk-4.1-0'; then

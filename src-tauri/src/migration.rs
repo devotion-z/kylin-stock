@@ -3,16 +3,17 @@ use std::{fs, path::PathBuf, str::FromStr, time::Duration};
 use tauri::AppHandle;
 
 const DATABASE_FILE: &str = "kylin-stock.db";
-pub(crate) const LATEST_SCHEMA_VERSION: i64 = 1;
+pub(crate) const LATEST_SCHEMA_VERSION: i64 = 3;
 
 struct Migration {
     version: i64,
     statements: &'static [&'static str],
 }
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    statements: &[
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        statements: &[
         r#"CREATE TABLE IF NOT EXISTS units (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE,
@@ -85,8 +86,38 @@ const MIGRATIONS: &[Migration] = &[Migration {
         "CREATE INDEX IF NOT EXISTS idx_transactions_occurred_at ON stock_transactions(occurred_at)",
         "CREATE INDEX IF NOT EXISTS idx_transactions_type ON stock_transactions(type)",
         "CREATE INDEX IF NOT EXISTS idx_transactions_destination ON stock_transactions(destination)",
-    ],
-}];
+        ],
+    },
+    Migration {
+        version: 2,
+        statements: &[r#"INSERT OR IGNORE INTO units(name, status) VALUES
+            ('发', 1),
+            ('支', 1),
+            ('具', 1),
+            ('件', 1),
+            ('套', 1),
+            ('枚', 1),
+            ('米', 1),
+            ('公斤', 1),
+            ('箱', 1)"#],
+    },
+    Migration {
+        version: 3,
+        statements: &[
+            r#"CREATE TABLE IF NOT EXISTS attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity_type TEXT NOT NULL CHECK(entity_type IN ('MATERIAL', 'TRANSACTION')),
+                entity_id INTEGER NOT NULL,
+                file_name TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                data BLOB NOT NULL,
+                created_at TEXT NOT NULL
+            )"#,
+            "CREATE INDEX IF NOT EXISTS idx_attachments_entity ON attachments(entity_type, entity_id)",
+        ],
+    },
+];
 
 fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
     let app_config = app
@@ -218,6 +249,7 @@ mod tests {
             "stock_transactions",
             "backup_records",
             "app_settings",
+            "attachments",
         ];
         for table in required_tables {
             let count = sqlx::query_scalar::<_, i64>(
@@ -229,6 +261,15 @@ mod tests {
             .expect("inspect schema");
             assert_eq!(count, 1, "missing table {table}");
         }
+
+        let units = sqlx::query_scalar::<_, String>("SELECT name FROM units ORDER BY id")
+            .fetch_all(&mut connection)
+            .await
+            .expect("read default units");
+        assert_eq!(
+            units,
+            ["发", "支", "具", "件", "套", "枚", "米", "公斤", "箱"]
+        );
     }
 
     #[tokio::test]
@@ -267,7 +308,7 @@ mod tests {
         run_migrations_on_connection(&mut connection)
             .await
             .expect("first migration pass");
-        sqlx::query("INSERT INTO units(name,status) VALUES ('箱',1)")
+        sqlx::query("INSERT INTO units(name,status) VALUES ('卷',1)")
             .execute(&mut connection)
             .await
             .expect("seed unit");
@@ -275,7 +316,7 @@ mod tests {
         let version = run_migrations_on_connection(&mut connection)
             .await
             .expect("second migration pass");
-        let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM units WHERE name='箱'")
+        let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM units WHERE name='卷'")
             .fetch_one(&mut connection)
             .await
             .expect("count preserved unit");

@@ -25,7 +25,7 @@ fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app_config.join(DATABASE_FILE))
 }
 
-async fn open_connection(app: &AppHandle) -> Result<SqliteConnection, String> {
+pub(crate) async fn open_connection(app: &AppHandle) -> Result<SqliteConnection, String> {
     let url = format!("sqlite:{}", database_path(app)?.to_string_lossy());
     let mut connection = SqliteConnection::connect(&url)
         .await
@@ -133,4 +133,52 @@ pub async fn database_execute(
         rows_affected: result.rows_affected(),
         last_insert_id: result.last_insert_rowid(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn converts_sqlite_rows_to_json_without_losing_types() {
+        let mut connection = SqliteConnection::connect("sqlite::memory:")
+            .await
+            .expect("open database");
+        let row = sqlx::query("SELECT 7 AS id, 1.5 AS quantity, '网线' AS name, NULL AS remark")
+            .fetch_one(&mut connection)
+            .await
+            .expect("select row");
+        let value = row_value(row).expect("convert row");
+
+        assert_eq!(value["id"], 7);
+        assert_eq!(value["quantity"], 1.5);
+        assert_eq!(value["name"], "网线");
+        assert!(value["remark"].is_null());
+    }
+
+    #[tokio::test]
+    async fn binds_frontend_values_in_positional_order() {
+        let mut connection = SqliteConnection::connect("sqlite::memory:")
+            .await
+            .expect("open database");
+        sqlx::query("CREATE TABLE sample(id INTEGER PRIMARY KEY, name TEXT, quantity REAL)")
+            .execute(&mut connection)
+            .await
+            .expect("create table");
+
+        bind_values(
+            sqlx::query("INSERT INTO sample(name, quantity) VALUES ($1, $2)"),
+            vec![Value::String("电缆".into()), Value::from(2.5)],
+        )
+        .execute(&mut connection)
+        .await
+        .expect("insert bound values");
+
+        let row = sqlx::query("SELECT name, quantity FROM sample")
+            .fetch_one(&mut connection)
+            .await
+            .expect("select inserted row");
+        assert_eq!(row.try_get::<String, _>("name").unwrap(), "电缆");
+        assert_eq!(row.try_get::<f64, _>("quantity").unwrap(), 2.5);
+    }
 }

@@ -80,6 +80,21 @@ For OUT records, `destination` stores the outbound destination. For IN records, 
 - value TEXT
 - updated_at TEXT NOT NULL
 
+### attachments
+
+物资备注与出入库流水的单据图片附件。图片内容直接存入数据库，保证备份、恢复和迁移时不会因为原文件路径变化而丢失。
+
+- id INTEGER PRIMARY KEY
+- entity_type TEXT NOT NULL (`MATERIAL`, `TRANSACTION`)
+- entity_id INTEGER NOT NULL
+- file_name TEXT NOT NULL
+- mime_type TEXT NOT NULL
+- file_size INTEGER NOT NULL
+- data BLOB NOT NULL
+- created_at TEXT NOT NULL
+
+应用层校验所属业务记录存在，并限制为常见图片格式、单张 15 MB、每条业务记录最多 10 张。
+
 ## 3. Inventory Transaction Rules
 
 ### Stock In
@@ -115,6 +130,7 @@ Create indexes for common filters:
 - stock_transactions(related_unit)
 - stock_transactions(destination)
 - inventory_balances(material_id, location_id)
+- attachments(entity_type, entity_id)
 
 ## 5. Export Semantics
 

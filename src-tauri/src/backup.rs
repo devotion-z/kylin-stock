@@ -418,4 +418,47 @@ mod tests {
         let _ = fs::remove_file(source);
         let _ = fs::remove_file(snapshot);
     }
+
+    #[tokio::test]
+    async fn vacuum_snapshot_preserves_attachment_image_bytes() {
+        let source = temp_database_path("attachment-source");
+        let snapshot = temp_database_path("attachment-copy");
+        create_candidate(&source, LATEST_SCHEMA_VERSION, true).await;
+
+        let url = format!("sqlite:{}", source.to_string_lossy());
+        let mut writer = SqliteConnection::connect(&url)
+            .await
+            .expect("open source database");
+        sqlx::query(
+            "CREATE TABLE attachments(id INTEGER PRIMARY KEY, entity_type TEXT, entity_id INTEGER, file_name TEXT, mime_type TEXT, file_size INTEGER, data BLOB, created_at TEXT)",
+        )
+        .execute(&mut writer)
+        .await
+        .expect("create attachments table");
+        let image_bytes = vec![0x89, b'P', b'N', b'G', 1, 2, 3, 4];
+        sqlx::query("INSERT INTO attachments(entity_type,entity_id,file_name,mime_type,file_size,data,created_at) VALUES ('MATERIAL',1,'receipt.png','image/png',8,?,'2026-09-12')")
+            .bind(&image_bytes)
+            .execute(&mut writer)
+            .await
+            .expect("insert attachment");
+        writer.close().await.expect("close source database");
+
+        vacuum_into_snapshot(&source, &snapshot)
+            .await
+            .expect("snapshot database with attachment");
+
+        let snapshot_url = format!("sqlite:{}", snapshot.to_string_lossy());
+        let mut reader = SqliteConnection::connect(&snapshot_url)
+            .await
+            .expect("open snapshot");
+        let copied = sqlx::query_scalar::<_, Vec<u8>>("SELECT data FROM attachments WHERE id=1")
+            .fetch_one(&mut reader)
+            .await
+            .expect("read copied attachment");
+        assert_eq!(copied, image_bytes);
+        reader.close().await.expect("close snapshot");
+
+        let _ = fs::remove_file(source);
+        let _ = fs::remove_file(snapshot);
+    }
 }

@@ -1,3 +1,4 @@
+mod attachment;
 mod backup;
 mod database;
 mod inventory;
@@ -6,6 +7,10 @@ mod migration;
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
+            attachment::add_attachment,
+            attachment::delete_attachment,
+            attachment::get_attachment_data,
+            attachment::list_attachments,
             backup::create_database_backup,
             backup::restore_database_backup,
             database::database_execute,

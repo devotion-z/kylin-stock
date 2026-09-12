@@ -2,6 +2,8 @@ import { getDatabase, withDatabaseAccess, withDatabaseMutation } from './databas
 
 export interface Unit { id: number; name: string; status: number }
 export interface Location { id: number; name: string; remark: string | null; status: number }
+export type MasterDataChoice = number | string | undefined
+interface NamedChoice { id: number; name: string }
 export interface Material {
   id: number
   name: string
@@ -14,6 +16,7 @@ export interface Material {
   status: number
   created_at: string
   updated_at: string
+  attachment_count: number
 }
 
 const now = () => new Date().toISOString()
@@ -32,6 +35,24 @@ export async function createUnit(name: string) {
   )
 }
 
+export async function resolveMasterDataChoice(
+  choice: MasterDataChoice,
+  items: NamedChoice[],
+  create: (name: string) => Promise<{ lastInsertId: number }>,
+) {
+  if (typeof choice === 'number') return choice
+  const name = choice?.trim()
+  if (!name) return undefined
+  const existing = items.find((item) => item.name.trim().toLocaleLowerCase() === name.toLocaleLowerCase())
+  if (existing) return existing.id
+  const result = await create(name)
+  return Number(result.lastInsertId)
+}
+
+export function resolveUnitChoice(choice: MasterDataChoice, units: Unit[]) {
+  return resolveMasterDataChoice(choice, units, createUnit)
+}
+
 export async function listLocations(): Promise<Location[]> {
   return withDatabaseAccess(async () =>
     (await getDatabase()).select<Location[]>('SELECT id, name, remark, status FROM locations WHERE status = 1 ORDER BY name'),
@@ -47,13 +68,18 @@ export async function createLocation(name: string, remark = '') {
   )
 }
 
+export async function resolveLocationChoice(choice: MasterDataChoice, locations: Location[]) {
+  return resolveMasterDataChoice(choice, locations, (name) => createLocation(name))
+}
+
 export async function listMaterials(keyword = ''): Promise<Material[]> {
   const q = `%${keyword.trim()}%`
   return withDatabaseAccess(async () =>
     (await getDatabase()).select<Material[]>(`
       SELECT m.id, m.name, m.unit_id, u.name AS unit_name, m.category,
              m.default_location_id, l.name AS location_name, m.remark,
-             m.status, m.created_at, m.updated_at
+             m.status, m.created_at, m.updated_at,
+             (SELECT COUNT(*) FROM attachments a WHERE a.entity_type='MATERIAL' AND a.entity_id=m.id) AS attachment_count
       FROM materials m
       LEFT JOIN units u ON u.id = m.unit_id
       LEFT JOIN locations l ON l.id = m.default_location_id

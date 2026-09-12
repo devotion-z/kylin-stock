@@ -25,6 +25,7 @@ export interface LedgerRow {
   handler: string | null
   receiver: string | null
   remark: string | null
+  attachment_count: number
 }
 
 export interface InventoryFilters {
@@ -88,6 +89,17 @@ export async function stockOut(input: StockOperationInput) {
   return withDatabaseMutation(() => invoke<string>('stock_out', { input: payload }))
 }
 
+export async function getTransactionIdByNo(transactionNo: string): Promise<number> {
+  return withDatabaseAccess(async () => {
+    const rows = await (await getDatabase()).select<{ id: number }[]>(
+      'SELECT id FROM stock_transactions WHERE transaction_no=$1 LIMIT 1',
+      [transactionNo],
+    )
+    if (!rows.length) throw new Error('找不到刚保存的出入库记录')
+    return rows[0].id
+  })
+}
+
 export async function listInventory(filters: InventoryFilters | string = {}): Promise<InventoryRow[]> {
   const normalized: InventoryFilters = typeof filters === 'string' ? { keyword: filters } : filters
   const keyword = `%${(normalized.keyword ?? '').trim()}%`
@@ -119,7 +131,8 @@ export async function listLedger(filters: LedgerFilters = {}): Promise<LedgerRow
     (await getDatabase()).select<LedgerRow[]>(`
       SELECT t.id,t.transaction_no,t.type,m.name AS material_name,u.name AS unit_name,
              l.name AS location_name,t.quantity,t.occurred_at,t.related_unit,t.destination,
-             t.handler,t.receiver,t.remark
+             t.handler,t.receiver,t.remark,
+             (SELECT COUNT(*) FROM attachments a WHERE a.entity_type='TRANSACTION' AND a.entity_id=t.id) AS attachment_count
       FROM stock_transactions t
       JOIN materials m ON m.id=t.material_id
       LEFT JOIN units u ON u.id=m.unit_id
@@ -132,7 +145,7 @@ export async function listLedger(filters: LedgerFilters = {}): Promise<LedgerRow
         AND ($6='' OR t.occurred_at <= $6)
       ORDER BY t.occurred_at DESC,t.id DESC`, [
         material,
-        filters.type ?? '',
+        filters.type === 'ALL' ? '' : filters.type ?? '',
         relatedUnit,
         destination,
         filters.startAt ?? '',

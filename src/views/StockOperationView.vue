@@ -3,8 +3,10 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { listLocations, listMaterials, type Location, type Material } from '../services/masterData'
-import { stockIn, stockOut } from '../services/inventory'
+import { getTransactionIdByNo, stockIn, stockOut } from '../services/inventory'
 import { toLocalInputValue } from '../utils/date'
+import AttachmentField from '../components/AttachmentField.vue'
+import { addAttachment } from '../services/attachments'
 
 const route = useRoute()
 const isOut = computed(() => route.path === '/stock-out')
@@ -12,6 +14,7 @@ const submitting = ref(false)
 const loading = ref(false)
 const materials = ref<Material[]>([])
 const locations = ref<Location[]>([])
+const pendingAttachments = ref<string[]>([])
 const form = reactive({ materialId: undefined as number | undefined, locationId: undefined as number | undefined, quantity: 1, occurredAt: toLocalInputValue(), relatedUnit: '', destination: '', handler: '', receiver: '', remark: '' })
 
 async function load() {
@@ -34,6 +37,7 @@ function onMaterialChange(id: number) {
 function reset() {
   if (submitting.value) return
   Object.assign(form, { materialId: undefined, locationId: undefined, quantity: 1, occurredAt: toLocalInputValue(), relatedUnit: '', destination: '', handler: '', receiver: '', remark: '' })
+  pendingAttachments.value = []
 }
 
 async function submit() {
@@ -48,10 +52,23 @@ async function submit() {
   submitting.value = true
   try {
     const payload = { materialId: form.materialId, locationId: form.locationId, quantity: Number(form.quantity), occurredAt: new Date(form.occurredAt).toISOString(), relatedUnit: form.relatedUnit, destination: form.destination, handler: form.handler, receiver: form.receiver, remark: form.remark }
-    if (isOut.value) await stockOut(payload)
-    else await stockIn(payload)
-    ElMessage.success(isOut.value ? '出库登记成功' : '入库登记成功')
+    const transactionNo = isOut.value ? await stockOut(payload) : await stockIn(payload)
+    let attachmentWarning = ''
+    if (pendingAttachments.value.length) {
+      const transactionId = await getTransactionIdByNo(transactionNo)
+      try {
+        while (pendingAttachments.value.length) {
+          await addAttachment('TRANSACTION', transactionId, pendingAttachments.value[0])
+          pendingAttachments.value.shift()
+        }
+      } catch (e) {
+        attachmentWarning = e instanceof Error ? e.message : String(e)
+      }
+    }
+    if (attachmentWarning) ElMessage.warning(`登记已成功，但有单据图片未保存：${attachmentWarning}`)
+    else ElMessage.success(isOut.value ? '出库登记成功' : '入库登记成功')
     Object.assign(form, { materialId: undefined, locationId: undefined, quantity: 1, occurredAt: toLocalInputValue(), relatedUnit: '', destination: '', handler: '', receiver: '', remark: '' })
+    pendingAttachments.value = []
   } catch (e) { ElMessage.error(e instanceof Error ? e.message : String(e)) }
   finally { submitting.value = false }
 }
@@ -80,6 +97,7 @@ onMounted(load)
       <el-form-item label="经办人"><el-input v-model="form.handler" /></el-form-item>
       <el-form-item v-if="isOut" label="领用人"><el-input v-model="form.receiver" /></el-form-item>
       <el-form-item label="备注"><el-input v-model="form.remark" type="textarea" :rows="3" /></el-form-item>
+      <el-form-item label="单据图片"><AttachmentField v-model:pending="pendingAttachments" :attachments="[]" :disabled="submitting" /></el-form-item>
       <el-form-item><el-button type="primary" :disabled="submitting || !materials.length || !locations.length" :loading="submitting" @click="submit">确认{{ isOut ? '出库' : '入库' }}</el-button><el-button :disabled="submitting" @click="reset">重置</el-button></el-form-item>
     </el-form>
   </el-card>

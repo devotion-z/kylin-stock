@@ -5,13 +5,28 @@ import { ElMessage } from 'element-plus'
 import { listLedger, type LedgerRow } from '../services/inventory'
 import { exportLedgerRows } from '../services/export'
 import { formatDateTime } from '../utils/date'
+import AttachmentField from '../components/AttachmentField.vue'
+import { listAttachments, type Attachment } from '../services/attachments'
 
 const loading = ref(false)
 const exporting = ref(false)
 const operationBusy = computed(() => loading.value || exporting.value)
 const rows = ref<LedgerRow[]>([])
 const dateRange = ref<string[]>([])
-const filters = reactive({ material: '', type: '', relatedUnit: '', destination: '' })
+const filters = reactive({ material: '', type: 'ALL', relatedUnit: '', destination: '' })
+const attachmentDialogVisible = ref(false)
+const attachmentDialogTitle = ref('单据图片')
+const attachments = ref<Attachment[]>([])
+
+async function showAttachments(row: LedgerRow) {
+  try {
+    attachments.value = await listAttachments('TRANSACTION', row.id)
+    attachmentDialogTitle.value = `单据图片 · ${row.transaction_no}`
+    attachmentDialogVisible.value = true
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : String(e))
+  }
+}
 
 async function refresh() {
   if (operationBusy.value) return
@@ -31,7 +46,7 @@ async function refresh() {
 
 function reset() {
   if (operationBusy.value) return
-  Object.assign(filters, { material: '', type: '', relatedUnit: '', destination: '' })
+  Object.assign(filters, { material: '', type: 'ALL', relatedUnit: '', destination: '' })
   dateRange.value = []
   refresh()
 }
@@ -71,7 +86,8 @@ onMounted(refresh)
         style="width:260px"
       />
       <el-input v-model="filters.relatedUnit" :disabled="operationBusy" clearable placeholder="单位" style="width:170px" />
-      <el-select v-model="filters.type" :disabled="operationBusy" clearable placeholder="业务类型" style="width:130px">
+      <el-select v-model="filters.type" :disabled="operationBusy" placeholder="业务类型" style="width:130px">
+        <el-option label="全部" value="ALL" />
         <el-option label="入库" value="IN" />
         <el-option label="出库" value="OUT" />
         <el-option label="调整" value="ADJUST" />
@@ -111,8 +127,15 @@ onMounted(refresh)
       <el-table-column prop="receiver" label="领用人" width="100" />
       <el-table-column label="业务时间" min-width="170"><template #default="{ row }">{{ formatDateTime(row.occurred_at) }}</template></el-table-column>
       <el-table-column prop="remark" label="备注" min-width="180" show-overflow-tooltip />
+      <el-table-column label="单据图片" width="100">
+        <template #default="{ row }"><el-button v-if="row.attachment_count" link type="primary" @click="showAttachments(row)">查看（{{ row.attachment_count }}）</el-button><span v-else>-</span></template>
+      </el-table-column>
     </el-table>
   </el-card>
+
+  <el-dialog v-model="attachmentDialogVisible" :title="attachmentDialogTitle" width="620px">
+    <AttachmentField :attachments="attachments" readonly />
+  </el-dialog>
 </template>
 
 <style scoped>

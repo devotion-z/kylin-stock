@@ -1,0 +1,46 @@
+import { open } from '@tauri-apps/api/dialog'
+import { invoke } from '@tauri-apps/api/tauri'
+import { withDatabaseAccess, withDatabaseMutation } from './database'
+
+export type AttachmentEntityType = 'MATERIAL' | 'TRANSACTION'
+
+export interface Attachment {
+  id: number
+  entityType: AttachmentEntityType
+  entityId: number
+  fileName: string
+  mimeType: string
+  fileSize: number
+  createdAt: string
+}
+
+export async function chooseAttachmentImages(): Promise<string[]> {
+  const selected = await open({
+    multiple: true,
+    title: '选择单据图片',
+    filters: [{ name: '图片', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'] }],
+  })
+  if (!selected) return []
+  return Array.isArray(selected) ? selected : [selected]
+}
+
+export function listAttachments(entityType: AttachmentEntityType, entityId: number) {
+  return withDatabaseAccess(() => invoke<Attachment[]>('list_attachments', { entityType, entityId }))
+}
+
+export function addAttachment(entityType: AttachmentEntityType, entityId: number, sourcePath: string) {
+  return withDatabaseMutation(() => invoke<Attachment>('add_attachment', { entityType, entityId, sourcePath }))
+}
+
+export function deleteAttachment(id: number) {
+  return withDatabaseMutation(() => invoke<void>('delete_attachment', { id }))
+}
+
+export async function getAttachmentDataUrl(id: number) {
+  const result = await withDatabaseAccess(() => invoke<{ mimeType: string; data: string }>('get_attachment_data', { id }))
+  return `data:${result.mimeType};base64,${result.data}`
+}
+
+export function fileNameFromPath(path: string) {
+  return path.split(/[\\/]/).pop() || path
+}
