@@ -17,7 +17,7 @@ COMMIT
 ```
 
 - 任一步骤失败都会 `ROLLBACK`，不得把半升级状态暴露给业务层。
-- 前端只有 migration 成功后才加载 Tauri SQL 连接池。
+- 前端只有 migration 成功后才开放 Rust 原生数据库访问。
 - 如果数据库 `user_version` 高于当前程序支持版本，程序必须拒绝继续打开，避免旧程序误写新版本数据库。
 
 ## 新增 migration 的硬规则
@@ -45,8 +45,8 @@ COMMIT
    - 结构迁移和业务纠错分开。
    - 对无法自动判断的数据，宁可中止升级并给出明确错误，也不要猜测后改写。
 
-6. **禁止在前端通过多次 Tauri SQL 调用模拟 migration transaction。**
-   - Tauri SQL 使用连接池，多次调用不保证落在同一个 SQLite connection。
+6. **禁止在前端通过多次数据库命令模拟 migration transaction。**
+   - 多次命令使用不同的短连接，不能保证落在同一个 SQLite connection。
    - 需要事务原子性的结构升级必须留在 Rust 单连接执行器中。
 
 ## 发布前数据库回归要求
@@ -65,7 +65,7 @@ GitHub Actions 当前通过 `.github/workflows/inventory-tests.yml` 执行 Rust 
 
 ## 备份与 migration 的关系
 
-恢复历史 `.db` 后，应用重新打开数据库时会先执行 migration，再建立 Tauri SQL pool。因此：
+恢复历史 `.db` 后，应用重新打开数据库时会先执行 migration，再开放原生数据库访问。因此：
 
 ```text
 选择历史备份

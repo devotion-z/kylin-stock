@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core'
+import { invoke } from '@tauri-apps/api/tauri'
 import { getDatabase, withDatabaseAccess, withDatabaseMutation } from './database'
 
 export interface InventoryRow {

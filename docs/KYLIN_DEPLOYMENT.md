@@ -13,7 +13,7 @@
 ## 2. 交付原则
 
 1. 最终生产包必须经过目标银河麒麟设备实机验证；
-2. GitHub Actions 的 Ubuntu ARM64 构建/安装只作为原生 ARM64 工程烟测，不能替代银河麒麟兼容性验收；
+2. GitHub Actions 在原生 ARM64 runner 的 Ubuntu 20.04 容器中构建/安装，以 WebKitGTK 4.0 和较旧 GLIBC 作为兼容基线，但仍不能替代银河麒麟兼容性验收；
 3. 不允许为了安装软件破坏客户机器现有系统库；
 4. 如银河麒麟系统 WebKitGTK/GTK/GLIBC 与 CI 构建环境存在 ABI 差异，应调整构建基线或在兼容环境重新构建，不直接强行升级客户核心系统库；
 5. 首次安装和最终验收都应保留可追溯证据，而不是只口头确认“能打开”。
@@ -32,7 +32,7 @@ chmod +x scripts/kylin-doctor.sh
 - `uname -m` / CPU 架构；
 - 银河麒麟发行版信息；
 - GLIBC 版本；
-- WebKitGTK 4.1 / 4.0 情况；
+- WebKitGTK 4.0 情况（目标机已确认提供 `libwebkit2gtk-4.0-37`）；
 - GTK3；
 - OpenSSL；
 - 桌面会话与语言环境；
@@ -42,7 +42,7 @@ chmod +x scripts/kylin-doctor.sh
 
 ## 4. CI ARM64 构建/安装烟测
 
-GitHub Actions 使用原生 `ubuntu-22.04-arm` runner。正式门禁应覆盖：
+GitHub Actions 使用原生 `ubuntu-22.04-arm` runner，并在 Ubuntu 20.04 ARM64 容器内构建。正式门禁应覆盖：
 
 1. 确认 runner `uname -m = aarch64`；
 2. 安装 Tauri Linux 构建依赖；
@@ -51,9 +51,10 @@ GitHub Actions 使用原生 `ubuntu-22.04-arm` runner。正式门禁应覆盖：
 5. 验证 Debian `Package` / `Version` / `Architecture` 元数据；
 6. 真实执行 `dpkg -i`；
 7. 用 `dpkg-query` 确认包已安装且架构为 `arm64`；
-8. 检查已安装可执行文件及 `ldd` 缺失动态库；
+8. 检查安装包依赖明确为 `libwebkit2gtk-4.0-37`，并检查已安装可执行文件及 `ldd` 缺失动态库；
 9. 检查 Linux desktop entry，并确认用户看到的名称为“物资管理系统”；
-10. 上传短期保存的 smoke artifact。
+10. 在 Xvfb 虚拟显示器中真实启动应用并确认不会立即退出；
+11. 上传短期保存的 smoke artifact。
 
 Linux 系统包身份使用 ASCII 名称 `kylin-stock`；用户界面/桌面入口仍使用中文“物资管理系统”。
 
@@ -105,7 +106,7 @@ chmod +x scripts/kylin-acceptance-evidence.sh
 
 ## 7. 数据目录
 
-Tauri SQL 的相对 SQLite 数据库 `sqlite:kylin-stock.db` 位于应用 `app_config_dir` 下。KylinStock 的原生库存事务、数据库 migration 与备份/恢复模块必须定位同一业务数据库。
+Rust 原生数据库命令将 `kylin-stock.db` 放在应用 `app_config_dir` 下。库存事务、普通查询、数据库 migration 与备份/恢复模块必须定位同一业务数据库。
 
 现场不得根据猜测手工移动或修改数据库。需要迁移数据时优先使用系统提供的“备份与恢复”功能。
 

@@ -12,10 +12,10 @@ Recommended stack:
 - Vue 3 + TypeScript
 - Vite
 - Element Plus
-- Tauri 2
+- Tauri 1.8（银河麒麟 V10 / WebKitGTK 4.0 兼容基线）
 - Rust
 - SQLite
-- Tauri SQL / Rust SQLite integration
+- Rust 原生 SQLite integration（短连接查询与专用事务命令）
 - XLSX-compatible export library selected after ARM64/Kylin compatibility validation
 
 Runtime topology:

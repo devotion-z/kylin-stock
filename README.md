@@ -20,10 +20,10 @@ KylinStock 是一套面向银河麒麟桌面环境的轻量级单机物资出入
 - TypeScript
 - Vite
 - Element Plus
-- Tauri 2
+- Tauri 1.8（兼容银河麒麟 V10 的 WebKitGTK 4.0）
 - Rust
 - SQLite
-- Tauri SQL / Dialog / Filesystem plugins
+- Rust 原生 SQLite 命令 / Tauri Dialog / Filesystem APIs
 - SheetJS XLSX
 
 ## Core Features

@@ -14,11 +14,11 @@ Status: **implemented; CI compile validation passed**.
 Completed:
 
 - Vue 3 + TypeScript + Vite project skeleton.
-- Tauri 2 desktop shell.
+- Tauri 1.8 desktop shell for the Kylin V10 WebKitGTK 4.0 baseline.
 - Project directory conventions.
 - Element Plus application shell/sidebar/topbar.
 - SQLite initialization layer and initial schema.
-- Tauri SQL/dialog/filesystem capability configuration.
+- Rust 原生 SQLite 命令及 Tauri dialog/filesystem allowlist configuration.
 - Customer-required centered table styling baseline.
 - Main navigation entries for all V1 modules.
 - GitHub Actions build gate.
@@ -60,7 +60,7 @@ Completed:
 
 Hardening:
 
-The initial frontend implementation issued `BEGIN/COMMIT` through multiple Tauri SQL plugin calls. Because the plugin executes against a SQLx connection pool, Phase 6 moves stock mutations into native Rust commands. Each stock-in/out operation now opens one dedicated SQLite connection and executes `BEGIN IMMEDIATE -> ledger mutation -> balance mutation -> COMMIT` on that same connection. Failures roll back before returning to the UI.
+The initial frontend implementation issued `BEGIN/COMMIT` through multiple SQL plugin calls. The Kylin-compatible build removes that plugin and routes all SQLite access through native Rust commands. Each stock-in/out operation opens one dedicated SQLite connection and executes `BEGIN IMMEDIATE -> ledger mutation -> balance mutation -> COMMIT` on that same connection. Failures roll back before returning to the UI.
 
 Core flow:
 
@@ -115,7 +115,7 @@ Completed:
 
 Implementation note:
 
-`sqlite:kylin-stock.db` is resolved by the current Tauri SQL plugin under the Tauri `app_config_dir`; the native backup module deliberately resolves the same directory before accessing `kylin-stock.db`.
+Native Rust database and backup modules both resolve `kylin-stock.db` under Tauri's `app_config_dir`.
 
 Target-machine validation remaining:
 

@@ -7,7 +7,7 @@ use std::{
     str::FromStr,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 use crate::migration::LATEST_SCHEMA_VERSION;
 
@@ -36,9 +36,9 @@ fn timestamp_millis() -> u128 {
 
 fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
     let app_config = app
-        .path()
+        .path_resolver()
         .app_config_dir()
-        .map_err(|e| format!("无法获取应用数据目录：{e}"))?;
+        .ok_or_else(|| "无法获取应用数据目录".to_string())?;
     fs::create_dir_all(&app_config).map_err(|e| format!("无法创建应用数据目录：{e}"))?;
     Ok(app_config.join(DATABASE_FILE))
 }
@@ -270,7 +270,9 @@ pub async fn restore_database_backup(
             }
             let _ = sync_file(&target);
         }
-        return Err(format!("恢复文件未能安全落盘：{error}，已回滚到恢复前数据库"));
+        return Err(format!(
+            "恢复文件未能安全落盘：{error}，已回滚到恢复前数据库"
+        ));
     }
 
     if old.exists() {
@@ -317,12 +319,18 @@ mod tests {
                 "CREATE TABLE inventory_balances(id INTEGER PRIMARY KEY)",
                 "CREATE TABLE stock_transactions(id INTEGER PRIMARY KEY)",
             ] {
-                connection.execute(statement).await.expect("create core table");
+                connection
+                    .execute(statement)
+                    .await
+                    .expect("create core table");
             }
         }
 
         let pragma = format!("PRAGMA user_version = {user_version}");
-        connection.execute(pragma.as_str()).await.expect("set version");
+        connection
+            .execute(pragma.as_str())
+            .await
+            .expect("set version");
         connection.close().await.expect("close candidate");
     }
 
@@ -395,7 +403,10 @@ mod tests {
             .fetch_one(&mut reader)
             .await
             .expect("count snapshot rows");
-        assert_eq!(count, 0, "uncommitted writer data must not leak into backup");
+        assert_eq!(
+            count, 0,
+            "uncommitted writer data must not leak into backup"
+        );
         reader.close().await.expect("close snapshot reader");
 
         sqlx::query("ROLLBACK")

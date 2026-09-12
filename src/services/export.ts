@@ -1,5 +1,5 @@
-import { save } from '@tauri-apps/plugin-dialog'
-import { writeFile } from '@tauri-apps/plugin-fs'
+import { save } from '@tauri-apps/api/dialog'
+import { writeBinaryFile } from '@tauri-apps/api/fs'
 import * as XLSX from 'xlsx'
 import type { InventoryRow, LedgerRow } from './inventory'
 import type { Material } from './masterData'
@@ -28,7 +28,7 @@ async function saveWorkbook(workbook: XLSX.WorkBook, defaultName: string) {
     bookType: 'xlsx',
     compression: true,
   }) as ArrayBuffer
-  await writeFile(path, new Uint8Array(output))
+  await writeBinaryFile(path, new Uint8Array(output))
   return path
 }
 

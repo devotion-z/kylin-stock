@@ -1,8 +1,28 @@
-import { invoke } from '@tauri-apps/api/core'
-import Database from '@tauri-apps/plugin-sql'
+import { invoke } from '@tauri-apps/api/tauri'
 
-let database: Database | null = null
-let initialization: Promise<Database> | null = null
+interface ExecuteResult {
+  rowsAffected: number
+  lastInsertId: number
+}
+
+class NativeDatabase {
+  select<T>(sql: string, values: unknown[] = []): Promise<T> {
+    return invoke<T>('database_select', { sql, values })
+  }
+
+  execute(sql: string, values: unknown[] = []): Promise<ExecuteResult> {
+    return invoke<ExecuteResult>('database_execute', { sql, values })
+  }
+
+  async close() {
+    // Each native command owns a short-lived SQLite connection, so no pool
+    // remains open when backup/restore needs to replace the database file.
+    return true
+  }
+}
+
+let database: NativeDatabase | null = null
+let initialization: Promise<NativeDatabase> | null = null
 let accessTail: Promise<void> = Promise.resolve()
 
 export async function initializeDatabase() {
@@ -15,7 +35,7 @@ export async function initializeDatabase() {
     // same connection instead of relying on several calls through a SQL pool.
     await invoke<number>('initialize_database_schema')
 
-    const opened = await Database.load('sqlite:kylin-stock.db')
+    const opened = new NativeDatabase()
     try {
       await opened.execute('PRAGMA foreign_keys = ON')
       database = opened

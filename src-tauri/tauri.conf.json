@@ -1,15 +1,26 @@
 {
-  "$schema": "https://schema.tauri.app/config/2",
-  "productName": "物资管理系统",
-  "version": "0.1.0",
-  "identifier": "com.devotionn.kylinstock",
+  "$schema": "https://schema.tauri.app/config/1",
+  "package": {
+    "productName": "kylin-stock",
+    "version": "0.1.1"
+  },
   "build": {
     "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
+    "devPath": "http://localhost:1420",
     "beforeBuildCommand": "npm run build",
-    "frontendDist": "../dist"
+    "distDir": "../dist"
   },
-  "app": {
+  "tauri": {
+    "allowlist": {
+      "all": false,
+      "dialog": {
+        "open": true,
+        "save": true
+      },
+      "fs": {
+        "writeFile": true
+      }
+    },
     "windows": [
       {
         "label": "main",
@@ -23,13 +34,27 @@
       }
     ],
     "security": {
-      "capabilities": ["main"]
+      "csp": null
+    },
+    "bundle": {
+      "active": true,
+      "targets": "all",
+      "identifier": "com.devotionn.kylinstock",
+      "category": "Business",
+      "shortDescription": "物资出入库与库存管理系统",
+      "icon": [
+        "icons/32x32.png",
+        "icons/128x128.png",
+        "icons/128x128@2x.png",
+        "icons/icon.png"
+      ],
+      "deb": {
+        "desktopTemplate": "deb.desktop.hbs",
+        "depends": [
+          "libwebkit2gtk-4.0-37",
+          "libgtk-3-0"
+        ]
+      }
     }
-  },
-  "bundle": {
-    "active": true,
-    "targets": "all",
-    "category": "Business",
-    "shortDescription": "物资出入库与库存管理系统"
   }
 }

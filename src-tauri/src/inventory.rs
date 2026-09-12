@@ -1,7 +1,7 @@
 use serde::Deserialize;
-use sqlx::{Connection, Executor, SqliteConnection};
+use sqlx::{Connection, SqliteConnection};
 use std::{fs, path::PathBuf};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use uuid::Uuid;
 
 const DATABASE_FILE: &str = "kylin-stock.db";
@@ -22,9 +22,9 @@ pub struct StockOperationInput {
 
 fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
     let app_config = app
-        .path()
+        .path_resolver()
         .app_config_dir()
-        .map_err(|e| format!("无法获取应用数据目录：{e}"))?;
+        .ok_or_else(|| "无法获取应用数据目录".to_string())?;
     fs::create_dir_all(&app_config).map_err(|e| format!("无法创建应用数据目录：{e}"))?;
     Ok(app_config.join(DATABASE_FILE))
 }

@@ -1,5 +1,5 @@
-import { invoke } from '@tauri-apps/api/core'
-import { open, save } from '@tauri-apps/plugin-dialog'
+import { invoke } from '@tauri-apps/api/tauri'
+import { open, save } from '@tauri-apps/api/dialog'
 import { checkDatabaseIntegrity, closeDatabase, getDatabase, reopenDatabase, withDatabaseAccess, withDatabaseMutation } from './database'
 
 export type BackupType = 'MANUAL' | 'ANNUAL'
