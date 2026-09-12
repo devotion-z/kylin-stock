@@ -64,6 +64,11 @@ jobs:
           uname -m
           test "$(uname -m)" = "aarch64"
 
+      - name: Bootstrap Ubuntu 20.04 container
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
