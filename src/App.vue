@@ -11,6 +11,7 @@ import {
   Position,
   UploadFilled,
 } from '@element-plus/icons-vue'
+import appIcon from './assets/app-icon.png'
 
 const route = useRoute()
 const router = useRouter()
@@ -33,7 +34,7 @@ const menu = [
   <el-container class="app-shell">
     <el-aside width="220px" class="sidebar">
       <div class="brand">
-        <div class="brand-mark">KS</div>
+        <img class="brand-mark" :src="appIcon" alt="物资管理系统图标" />
         <div>
           <strong>物资管理系统</strong>
           <small>KylinStock</small>

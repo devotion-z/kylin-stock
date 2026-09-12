@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { loadDashboard, type DashboardStats, type RecentTransaction, type StockOverviewRow } from '../services/dashboard'
-import { formatDateTime } from '../utils/date'
+import { formatBusinessDate } from '../utils/date'
 
 const loading = ref(false)
 const stats = ref<DashboardStats>({ materialCount: 0, stockedMaterialCount: 0, todayInCount: 0, todayOutCount: 0 })
@@ -66,8 +66,8 @@ onMounted(refresh)
             <el-table-column prop="quantity" label="数量" width="90" />
             <el-table-column prop="unit_name" label="单位" width="80" />
             <el-table-column prop="destination" label="出库去向" min-width="120" show-overflow-tooltip />
-            <el-table-column label="业务时间" min-width="150">
-              <template #default="{ row }">{{ formatDateTime(row.occurred_at) }}</template>
+            <el-table-column label="业务日期" min-width="130">
+              <template #default="{ row }">{{ formatBusinessDate(row.occurred_at) }}</template>
             </el-table-column>
           </el-table>
           <el-empty v-else description="暂无业务记录，请先登记入库" />

@@ -73,7 +73,7 @@ function validate(input: StockOperationInput) {
   if (!input.materialId) throw new Error('请选择物资')
   if (!input.locationId) throw new Error('请选择存放位置')
   if (!Number.isFinite(input.quantity) || input.quantity <= 0) throw new Error('数量必须大于 0')
-  if (!input.occurredAt) throw new Error('请选择业务时间')
+  if (!input.occurredAt) throw new Error('请选择业务日期')
 }
 
 export async function stockIn(input: StockOperationInput) {

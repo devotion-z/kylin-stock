@@ -176,7 +176,7 @@ onMounted(refresh)
       <el-table-column prop="name" label="物资名称" min-width="180" />
       <el-table-column prop="unit_name" label="单位" width="100" />
       <el-table-column prop="category" label="分类" min-width="130" />
-      <el-table-column prop="location_name" label="默认存放位置" min-width="160" />
+      <el-table-column prop="location_name" label="存放位置" min-width="160" />
       <el-table-column prop="remark" label="备注" min-width="180" show-overflow-tooltip />
       <el-table-column label="单据图片" width="100"><template #default="{ row }">{{ row.attachment_count ? `${row.attachment_count} 张` : '-' }}</template></el-table-column>
       <el-table-column label="状态" width="90"><template #default="{ row }"><el-tag :type="row.status === 1 ? 'success' : 'info'">{{ row.status === 1 ? '正常' : '停用' }}</el-tag></template></el-table-column>

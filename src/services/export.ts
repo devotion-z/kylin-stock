@@ -3,7 +3,7 @@ import { writeBinaryFile } from '@tauri-apps/api/fs'
 import * as XLSX from 'xlsx'
 import type { InventoryRow, LedgerRow } from './inventory'
 import type { Material } from './masterData'
-import { formatDateTime } from '../utils/date'
+import { formatBusinessDate, formatDateTime } from '../utils/date'
 
 function safeDateStamp() {
   const d = new Date()
@@ -38,7 +38,7 @@ function setColumnWidths(sheet: XLSX.WorkSheet, widths: number[]) {
 
 export async function exportMaterialRows(rows: Material[]) {
   const data = [
-    ['物资名称', '计量单位', '分类', '默认存放位置', '备注', '状态'],
+    ['物资名称', '计量单位', '分类', '存放位置', '备注', '状态'],
     ...rows.map((row) => [
       row.name,
       row.unit_name ?? '',
@@ -57,7 +57,7 @@ export async function exportMaterialRows(rows: Material[]) {
 
 export async function exportLedgerRows(rows: LedgerRow[]) {
   const data = [
-    ['流水号', '业务类型', '物资名称', '数量', '单位', '存放位置', '相关单位', '出库去向', '经办人', '领用人', '业务时间', '备注'],
+    ['流水号', '业务类型', '物资名称', '数量', '单位', '存放位置', '相关单位', '出库去向', '经办人', '领用人', '业务日期', '备注'],
     ...rows.map((row) => [
       row.transaction_no,
       row.type === 'IN' ? '入库' : row.type === 'OUT' ? '出库' : '调整',
@@ -69,7 +69,7 @@ export async function exportLedgerRows(rows: LedgerRow[]) {
       row.destination ?? '',
       row.handler ?? '',
       row.receiver ?? '',
-      formatDateTime(row.occurred_at),
+      formatBusinessDate(row.occurred_at),
       row.remark ?? '',
     ]),
   ]

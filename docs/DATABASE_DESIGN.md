@@ -80,6 +80,16 @@ For OUT records, `destination` stores the outbound destination. For IN records, 
 - value TEXT
 - updated_at TEXT NOT NULL
 
+### business_options
+
+保存来源/领用单位和出库去向的本机可搜索选项；历史流水仍保存文本快照，不因选项库后续调整而改变。
+
+- id INTEGER PRIMARY KEY
+- kind TEXT NOT NULL (`RELATED_UNIT`, `DESTINATION`)
+- name TEXT NOT NULL
+- status INTEGER NOT NULL DEFAULT 1
+- UNIQUE(kind, name)
+
 ### attachments
 
 物资备注与出入库流水的单据图片附件。图片内容直接存入数据库，保证备份、恢复和迁移时不会因为原文件路径变化而丢失。
@@ -142,7 +152,7 @@ Historical stock transactions are not physically deleted through ordinary applic
 
 ## 7. Numeric Precision
 
-Quantity is modeled as NUMERIC rather than assuming integer-only stock because units may later include kg, m, etc. UI validation can restrict precision according to business confirmation.
+Quantity is modeled as NUMERIC rather than assuming integer-only stock because units may include kg, m, etc. UI and Rust both reject values with more than two decimal places instead of rounding them.
 
 ## 8. Migration
 

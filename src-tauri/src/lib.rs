@@ -3,9 +3,11 @@ mod backup;
 mod database;
 mod inventory;
 mod migration;
+mod single_instance;
 
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| single_instance::acquire(app).map_err(Into::into))
         .invoke_handler(tauri::generate_handler![
             attachment::add_attachment,
             attachment::delete_attachment,

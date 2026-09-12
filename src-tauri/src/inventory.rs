@@ -62,8 +62,12 @@ fn validate(input: &StockOperationInput) -> Result<(), String> {
     if !input.quantity.is_finite() || input.quantity <= 0.0 {
         return Err("数量必须大于 0".into());
     }
+    let scaled = input.quantity * 100.0;
+    if (scaled - scaled.round()).abs() > 1e-7 {
+        return Err("数量最多只能有两位小数，系统不会自动四舍五入".into());
+    }
     if input.occurred_at.trim().is_empty() {
-        return Err("请选择业务时间".into());
+        return Err("请选择业务日期".into());
     }
     Ok(())
 }
@@ -315,6 +319,13 @@ mod tests {
             receiver: None,
             remark: Some("自动化测试".into()),
         }
+    }
+
+    #[test]
+    fn quantity_precision_is_rejected_instead_of_rounded() {
+        assert!(validate(&input(1.23)).is_ok());
+        let error = validate(&input(1.234)).expect_err("three decimals must be rejected");
+        assert!(error.contains("两位小数"));
     }
 
     async fn balance(connection: &mut SqliteConnection) -> f64 {

@@ -3,7 +3,7 @@ use std::{fs, path::PathBuf, str::FromStr, time::Duration};
 use tauri::AppHandle;
 
 const DATABASE_FILE: &str = "kylin-stock.db";
-pub(crate) const LATEST_SCHEMA_VERSION: i64 = 3;
+pub(crate) const LATEST_SCHEMA_VERSION: i64 = 4;
 
 struct Migration {
     version: i64,
@@ -115,6 +115,25 @@ const MIGRATIONS: &[Migration] = &[
                 created_at TEXT NOT NULL
             )"#,
             "CREATE INDEX IF NOT EXISTS idx_attachments_entity ON attachments(entity_type, entity_id)",
+        ],
+    },
+    Migration {
+        version: 4,
+        statements: &[
+            r#"CREATE TABLE IF NOT EXISTS business_options (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL CHECK(kind IN ('RELATED_UNIT', 'DESTINATION')),
+                name TEXT NOT NULL COLLATE NOCASE,
+                status INTEGER NOT NULL DEFAULT 1,
+                UNIQUE(kind, name)
+            )"#,
+            r#"INSERT OR IGNORE INTO business_options(kind,name,status)
+               SELECT 'RELATED_UNIT', TRIM(related_unit), 1 FROM stock_transactions
+               WHERE TRIM(COALESCE(related_unit,'')) <> ''"#,
+            r#"INSERT OR IGNORE INTO business_options(kind,name,status)
+               SELECT 'DESTINATION', TRIM(destination), 1 FROM stock_transactions
+               WHERE TRIM(COALESCE(destination,'')) <> ''"#,
+            "CREATE INDEX IF NOT EXISTS idx_business_options_kind_name ON business_options(kind, name)",
         ],
     },
 ];
@@ -250,6 +269,7 @@ mod tests {
             "backup_records",
             "app_settings",
             "attachments",
+            "business_options",
         ];
         for table in required_tables {
             let count = sqlx::query_scalar::<_, i64>(
@@ -323,6 +343,51 @@ mod tests {
 
         assert_eq!(version, LATEST_SCHEMA_VERSION);
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn business_option_migration_imports_existing_transaction_values() {
+        let mut connection = memory_database().await;
+        run_migrations_on_connection(&mut connection)
+            .await
+            .expect("create current schema");
+        sqlx::query("INSERT INTO locations(name,status) VALUES ('一号库',1)")
+            .execute(&mut connection)
+            .await
+            .expect("seed location");
+        sqlx::query("INSERT INTO materials(name,status,created_at,updated_at) VALUES ('网线',1,'2026-09-12','2026-09-12')")
+            .execute(&mut connection)
+            .await
+            .expect("seed material");
+        sqlx::query("INSERT INTO stock_transactions(transaction_no,type,material_id,location_id,quantity,occurred_at,related_unit,destination,created_at) VALUES ('OUT-1','OUT',1,1,1,'2026-09-12','维修组','一车间','2026-09-12')")
+            .execute(&mut connection)
+            .await
+            .expect("seed transaction");
+        sqlx::query("DELETE FROM business_options")
+            .execute(&mut connection)
+            .await
+            .expect("simulate schema before option migration");
+        sqlx::query("PRAGMA user_version = 3")
+            .execute(&mut connection)
+            .await
+            .expect("rewind schema version");
+
+        run_migrations_on_connection(&mut connection)
+            .await
+            .expect("run option migration");
+        let options = sqlx::query_as::<_, (String, String)>(
+            "SELECT kind,name FROM business_options ORDER BY kind",
+        )
+        .fetch_all(&mut connection)
+        .await
+        .expect("read imported options");
+        assert_eq!(
+            options,
+            vec![
+                ("DESTINATION".into(), "一车间".into()),
+                ("RELATED_UNIT".into(), "维修组".into()),
+            ]
+        );
     }
 
     #[tokio::test]

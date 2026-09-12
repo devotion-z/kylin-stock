@@ -4,7 +4,7 @@ import dayjs from 'dayjs'
 import { ElMessage } from 'element-plus'
 import { listLedger, type LedgerRow } from '../services/inventory'
 import { exportLedgerRows } from '../services/export'
-import { formatDateTime } from '../utils/date'
+import { formatBusinessDate } from '../utils/date'
 import AttachmentField from '../components/AttachmentField.vue'
 import { listAttachments, type Attachment } from '../services/attachments'
 
@@ -125,7 +125,7 @@ onMounted(refresh)
       <el-table-column prop="destination" label="出库去向" min-width="150" />
       <el-table-column prop="handler" label="经办人" width="100" />
       <el-table-column prop="receiver" label="领用人" width="100" />
-      <el-table-column label="业务时间" min-width="170"><template #default="{ row }">{{ formatDateTime(row.occurred_at) }}</template></el-table-column>
+      <el-table-column label="业务日期" min-width="130"><template #default="{ row }">{{ formatBusinessDate(row.occurred_at) }}</template></el-table-column>
       <el-table-column prop="remark" label="备注" min-width="180" show-overflow-tooltip />
       <el-table-column label="单据图片" width="100">
         <template #default="{ row }"><el-button v-if="row.attachment_count" link type="primary" @click="showAttachments(row)">查看（{{ row.attachment_count }}）</el-button><span v-else>-</span></template>
