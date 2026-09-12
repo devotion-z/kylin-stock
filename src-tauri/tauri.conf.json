@@ -49,11 +49,7 @@
         "icons/icon.png"
       ],
       "deb": {
-        "desktopTemplate": "deb.desktop.hbs",
-        "depends": [
-          "libwebkit2gtk-4.0-37",
-          "libgtk-3-0"
-        ]
+        "desktopTemplate": "deb.desktop.hbs"
       }
     }
   }
