@@ -18,7 +18,7 @@ const filters = reactive({ keyword: '', unit: '', location: '' })
 
 async function refresh() {
   if (operationBusy.value) return
-  const query = { ...filters }
+  const query = { ...filters, location: isDistribution.value ? filters.location : '' }
   loading.value = true
   try {
     rows.value = await listInventory(query)
