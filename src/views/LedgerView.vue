@@ -14,7 +14,7 @@ const exporting = ref(false)
 const operationBusy = computed(() => loading.value || exporting.value)
 const rows = ref<LedgerRow[]>([])
 const dateRange = ref<string[]>([])
-const filters = reactive({ material: '', type: 'ALL', relatedUnit: '', destination: '' })
+const filters = reactive({ material: '', type: 'ALL', relatedUnit: '' })
 const attachmentDialogVisible = ref(false)
 const attachmentDialogTitle = ref('单据图片')
 const attachments = ref<Attachment[]>([])
@@ -52,7 +52,7 @@ async function loadMaterialOptions() {
 
 function reset() {
   if (operationBusy.value) return
-  Object.assign(filters, { material: '', type: 'ALL', relatedUnit: '', destination: '' })
+  Object.assign(filters, { material: '', type: 'ALL', relatedUnit: '' })
   dateRange.value = []
   refresh()
 }
@@ -101,7 +101,6 @@ onMounted(() => { refresh(); loadMaterialOptions() })
         <el-option label="出库" value="OUT" />
         <el-option label="调整" value="ADJUST" />
       </el-select>
-      <el-input v-model="filters.destination" :disabled="operationBusy" clearable placeholder="出库去向" style="width:180px" />
       <el-button type="primary" :loading="loading" :disabled="operationBusy" @click="refresh">查询</el-button>
       <el-button :disabled="operationBusy" @click="reset">重置</el-button>
       <el-button type="success" :loading="exporting" :disabled="operationBusy || !rows.length" @click="exportCurrent">
@@ -130,8 +129,7 @@ onMounted(() => { refresh(); loadMaterialOptions() })
       <el-table-column prop="quantity" label="数量" width="110" />
       <el-table-column prop="unit_name" label="计量单位" width="100" />
       <el-table-column prop="location_name" label="存放位置" min-width="130" />
-      <el-table-column prop="related_unit" label="相关单位" min-width="140" />
-      <el-table-column prop="destination" label="出库去向" min-width="150" />
+      <el-table-column prop="related_unit" label="领用/来源单位" min-width="160" />
       <el-table-column prop="handler" label="经办人" width="100" />
       <el-table-column prop="receiver" label="领用人" width="100" />
       <el-table-column label="业务日期" min-width="130"><template #default="{ row }">{{ formatBusinessDate(row.occurred_at) }}</template></el-table-column>

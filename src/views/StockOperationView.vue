@@ -3,7 +3,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { listLocations, listMaterials, type Location, type Material } from '../services/masterData'
-import { getTransactionIdByNo, stockIn, stockOut } from '../services/inventory'
+import { getTransactionIdByNo, stockInBatch, stockOutBatch } from '../services/inventory'
 import { toLocalDateValue } from '../utils/date'
 import AttachmentField from '../components/AttachmentField.vue'
 import { addAttachment } from '../services/attachments'
@@ -18,16 +18,17 @@ const materials = ref<Material[]>([])
 const locations = ref<Location[]>([])
 const pendingAttachments = ref<string[]>([])
 const relatedUnitOptions = ref<BusinessOption[]>([])
-const destinationOptions = ref<BusinessOption[]>([])
 const scanCode = ref('')
 const scanInput = ref<{ focus: () => void }>()
-const form = reactive({ materialId: undefined as number | undefined, locationId: undefined as number | undefined, quantity: '1', occurredAt: toLocalDateValue(), relatedUnit: '', destination: '', handler: '', receiver: '', remark: '' })
+interface OperationLine { materialId?: number; locationId?: number; quantity: string }
+const lines = ref<OperationLine[]>([{ quantity: '1' }])
+const form = reactive({ occurredAt: toLocalDateValue(), relatedUnit: '', handler: '', receiver: '', remark: '' })
 
 async function load() {
   loading.value = true
   try {
-    ;[materials.value, locations.value, relatedUnitOptions.value, destinationOptions.value] = await Promise.all([
-      listMaterials(), listLocations(), listBusinessOptions('RELATED_UNIT'), listBusinessOptions('DESTINATION'),
+    ;[materials.value, locations.value, relatedUnitOptions.value] = await Promise.all([
+      listMaterials(), listLocations(), listBusinessOptions('RELATED_UNIT'),
     ])
     materials.value = materials.value.filter((item) => item.status === 1)
   } catch (e) {
@@ -37,10 +38,13 @@ async function load() {
   }
 }
 
-function onMaterialChange(id: number) {
+function onMaterialChange(index: number, id: number) {
   const material = materials.value.find((item) => item.id === id)
-  if (material?.default_location_id) form.locationId = material.default_location_id
+  if (material?.default_location_id) lines.value[index].locationId = material.default_location_id
 }
+
+function addLine() { lines.value.push({ quantity: '1' }) }
+function removeLine(index: number) { if (lines.value.length > 1) lines.value.splice(index, 1) }
 
 function handleScan() {
   const code = scanCode.value.trim()
@@ -49,8 +53,9 @@ function handleScan() {
   if (!material) {
     ElMessage.warning(`未找到条码为“${code}”的启用物资，请先在物资管理中维护条码`)
   } else {
-    form.materialId = material.id
-    onMaterialChange(material.id)
+    const index = lines.value.length - 1
+    lines.value[index].materialId = material.id
+    onMaterialChange(index, material.id)
     ElMessage.success(`已扫描：${material.name}`)
   }
   scanCode.value = ''
@@ -59,7 +64,8 @@ function handleScan() {
 
 function reset() {
   if (submitting.value) return
-  Object.assign(form, { materialId: undefined, locationId: undefined, quantity: '1', occurredAt: toLocalDateValue(), relatedUnit: '', destination: '', handler: '', receiver: '', remark: '' })
+  Object.assign(form, { occurredAt: toLocalDateValue(), relatedUnit: '', handler: '', receiver: '', remark: '' })
+  lines.value = [{ quantity: '1' }]
   pendingAttachments.value = []
   scanCode.value = ''
 }
@@ -68,27 +74,27 @@ async function submit() {
   // Loading state alone is not a correctness guard: two click events can enter
   // this function before Vue has rendered the disabled/loading button state.
   if (submitting.value) return
-  if (!form.materialId) return ElMessage.warning('请选择物资')
-  if (!form.locationId) return ElMessage.warning('请选择存放位置')
+  if (!lines.value.length) return ElMessage.warning('请至少添加一项物资')
   if (!form.occurredAt) return ElMessage.warning('请选择业务日期')
-  if (isOut.value && !form.destination.trim()) return ElMessage.warning('请填写出库去向')
-
-  let quantity: number
-  try {
-    quantity = parseQuantityInput(form.quantity)
-  } catch (e) {
-    return ElMessage.warning(e instanceof Error ? e.message : String(e))
+  const parsedLines = [] as Array<{ materialId: number; locationId: number; quantity: number }>
+  for (let index = 0; index < lines.value.length; index += 1) {
+    const line = lines.value[index]
+    if (!line.materialId) return ElMessage.warning(`第 ${index + 1} 行请选择物资`)
+    if (!line.locationId) return ElMessage.warning(`第 ${index + 1} 行请选择存放位置`)
+    try { parsedLines.push({ materialId: line.materialId, locationId: line.locationId, quantity: parseQuantityInput(line.quantity) }) }
+    catch (e) { return ElMessage.warning(`第 ${index + 1} 行：${e instanceof Error ? e.message : String(e)}`) }
   }
+  if (isOut.value && !form.relatedUnit.trim()) return ElMessage.warning('请填写领用单位')
 
   submitting.value = true
   try {
     const relatedUnit = await ensureBusinessOption('RELATED_UNIT', form.relatedUnit)
-    const destination = isOut.value ? await ensureBusinessOption('DESTINATION', form.destination) : ''
-    const payload = { materialId: form.materialId, locationId: form.locationId, quantity, occurredAt: `${form.occurredAt}T00:00:00.000Z`, relatedUnit, destination, handler: form.handler, receiver: form.receiver, remark: form.remark }
-    const transactionNo = isOut.value ? await stockOut(payload) : await stockIn(payload)
+    const destination = isOut.value ? form.relatedUnit.trim() : ''
+    const payload = parsedLines.map((line) => ({ ...line, occurredAt: `${form.occurredAt}T00:00:00.000Z`, relatedUnit, destination, handler: form.handler, receiver: form.receiver, remark: form.remark }))
+    const transactionNos = isOut.value ? await stockOutBatch(payload) : await stockInBatch(payload)
     let attachmentWarning = ''
     if (pendingAttachments.value.length) {
-      const transactionId = await getTransactionIdByNo(transactionNo)
+      const transactionId = await getTransactionIdByNo(transactionNos[0])
       try {
         while (pendingAttachments.value.length) {
           await addAttachment('TRANSACTION', transactionId, pendingAttachments.value[0])
@@ -100,12 +106,11 @@ async function submit() {
     }
     if (attachmentWarning) ElMessage.warning(`登记已成功，但有单据图片未保存：${attachmentWarning}`)
     else ElMessage.success(isOut.value ? '出库登记成功' : '入库登记成功')
-    Object.assign(form, { materialId: undefined, locationId: undefined, quantity: '1', occurredAt: toLocalDateValue(), relatedUnit: '', destination: '', handler: '', receiver: '', remark: '' })
+    Object.assign(form, { occurredAt: toLocalDateValue(), relatedUnit: '', handler: '', receiver: '', remark: '' })
+    lines.value = [{ quantity: '1' }]
     pendingAttachments.value = []
     scanCode.value = ''
-    ;[relatedUnitOptions.value, destinationOptions.value] = await Promise.all([
-      listBusinessOptions('RELATED_UNIT'), listBusinessOptions('DESTINATION'),
-    ])
+    relatedUnitOptions.value = await listBusinessOptions('RELATED_UNIT')
   } catch (e) { ElMessage.error(e instanceof Error ? e.message : String(e)) }
   finally { submitting.value = false }
 }
@@ -126,24 +131,25 @@ onMounted(load)
           <template #append><el-button :disabled="!scanCode.trim()" @click="handleScan">识别</el-button></template>
         </el-input>
       </el-form-item>
-      <el-form-item label="物资名称" required>
-        <el-select v-model="form.materialId" filterable style="width:100%" placeholder="请选择物资" @change="onMaterialChange">
-          <el-option v-for="item in materials" :key="item.id" :label="`${item.name}${item.unit_name ? `（${item.unit_name}）` : ''}`" :value="item.id" />
-        </el-select>
-      </el-form-item>
-      <el-form-item label="存放位置" required><el-select v-model="form.locationId" filterable style="width:100%" placeholder="请选择存放位置"><el-option v-for="item in locations" :key="item.id" :label="item.name" :value="item.id" /></el-select></el-form-item>
-      <el-form-item :label="isOut ? '出库数量' : '入库数量'" required>
-        <el-input v-model="form.quantity" inputmode="decimal" maxlength="18" placeholder="请输入数量，最多两位小数" />
+      <el-form-item :label="isOut ? '出库物资明细' : '入库物资明细'" required>
+        <div class="line-list">
+          <div v-for="(line, index) in lines" :key="index" class="operation-line">
+            <el-select v-model="line.materialId" filterable placeholder="物资名称" class="line-material" @change="onMaterialChange(index, line.materialId!)">
+              <el-option v-for="item in materials" :key="item.id" :label="`${item.name}${item.unit_name ? `（${item.unit_name}）` : ''}`" :value="item.id" />
+            </el-select>
+            <el-select v-model="line.locationId" filterable placeholder="存放位置" class="line-location">
+              <el-option v-for="item in locations" :key="item.id" :label="item.name" :value="item.id" />
+            </el-select>
+            <el-input v-model="line.quantity" inputmode="decimal" maxlength="18" placeholder="数量" class="line-quantity" />
+            <el-button link type="danger" :disabled="lines.length === 1" @click="removeLine(index)">删除</el-button>
+          </div>
+          <el-button plain type="primary" :disabled="submitting" @click="addLine">+ 添加一行物资</el-button>
+        </div>
       </el-form-item>
       <el-form-item label="业务日期" required><el-date-picker v-model="form.occurredAt" type="date" value-format="YYYY-MM-DD" format="YYYY年MM月DD日" :editable="false" placeholder="选择年月日" style="width:100%" /></el-form-item>
       <el-form-item :label="isOut ? '领用单位' : '来源单位'">
         <el-select v-model="form.relatedUnit" clearable filterable allow-create default-first-option style="width:100%" placeholder="选择，或输入新单位后按回车">
           <el-option v-for="item in relatedUnitOptions" :key="item.id" :label="item.name" :value="item.name" />
-        </el-select>
-      </el-form-item>
-      <el-form-item v-if="isOut" label="出库去向" required>
-        <el-select v-model="form.destination" clearable filterable allow-create default-first-option style="width:100%" placeholder="搜索选择，或输入新去向后按回车">
-          <el-option v-for="item in destinationOptions" :key="item.id" :label="item.name" :value="item.name" />
         </el-select>
       </el-form-item>
       <el-form-item label="经办人"><el-input v-model="form.handler" /></el-form-item>
@@ -155,4 +161,12 @@ onMounted(load)
   </el-card>
 </template>
 
-<style scoped>.operation-card { min-height: 560px; }</style>
+<style scoped>
+.operation-card { min-height: 560px; }
+.line-list { width: 100%; display: flex; flex-direction: column; gap: 10px; }
+.operation-line { display: flex; gap: 8px; align-items: center; }
+.line-material { flex: 1.5; min-width: 180px; }
+.line-location { flex: 1; min-width: 150px; }
+.line-quantity { width: 130px; }
+@media (max-width: 760px) { .operation-line { flex-wrap: wrap; } .line-material, .line-location { min-width: 45%; } }
+</style>

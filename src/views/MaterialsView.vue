@@ -5,6 +5,7 @@ import { createLocation, createUnit, deleteMaterial, listLocations, listMaterial
 import { exportMaterialRows } from '../services/export'
 import AttachmentField from '../components/AttachmentField.vue'
 import { addAttachment, listAttachments, type Attachment } from '../services/attachments'
+import { ensureBusinessOption, type BusinessOptionKind } from '../services/businessOptions'
 
 const loading = ref(false)
 const exporting = ref(false)
@@ -150,6 +151,18 @@ async function quickLocation() {
   }
 }
 
+async function quickBusinessOption(kind: BusinessOptionKind, title: string, hint: string) {
+  if (operationBusy.value) return
+  mutating.value = true
+  try {
+    const { value } = await ElMessageBox.prompt(hint, title, { inputPattern: /\S+/, inputErrorMessage: '名称不能为空', confirmButtonText: '确定', cancelButtonText: '取消' })
+    await ensureBusinessOption(kind, value)
+    ElMessage.success(`${title}已添加`)
+  } catch (e) {
+    if (e !== 'cancel' && e !== 'close') ElMessage.error(e instanceof Error ? e.message : String(e))
+  } finally { mutating.value = false }
+}
+
 async function exportCurrent() {
   if (operationBusy.value) return
   if (!materials.value.length) return ElMessage.warning('当前没有可导出的物资数据')
@@ -181,6 +194,8 @@ onMounted(refresh)
       <div>
         <el-button :disabled="operationBusy" @click="quickUnit">新增单位</el-button>
         <el-button :disabled="operationBusy" @click="quickLocation">新增位置</el-button>
+        <el-button :disabled="operationBusy" @click="quickBusinessOption('RELATED_UNIT', '新增领用单位', '请输入领用单位名称')">新增领用单位</el-button>
+        <el-button :disabled="operationBusy" @click="quickBusinessOption('RELATED_UNIT', '新增来源单位', '请输入来源单位名称')">新增来源单位</el-button>
         <el-button type="primary" :disabled="operationBusy" @click="openCreate">新增物资</el-button>
       </div>
     </div>

@@ -89,6 +89,19 @@ export async function stockOut(input: StockOperationInput) {
   return withDatabaseMutation(() => invoke<string>('stock_out', { input: payload }))
 }
 
+export async function stockInBatch(inputs: StockOperationInput[]) {
+  const payload = inputs.map(snapshotStockInput)
+  payload.forEach(validate)
+  return withDatabaseMutation(() => invoke<string[]>('stock_in_batch', { inputs: payload }))
+}
+
+export async function stockOutBatch(inputs: StockOperationInput[]) {
+  const payload = inputs.map(snapshotStockInput)
+  payload.forEach(validate)
+  if (payload.some((item) => !item.destination?.trim())) throw new Error('领用单位不能为空')
+  return withDatabaseMutation(() => invoke<string[]>('stock_out_batch', { inputs: payload }))
+}
+
 export async function getTransactionIdByNo(transactionNo: string): Promise<number> {
   return withDatabaseAccess(async () => {
     const rows = await (await getDatabase()).select<{ id: number }[]>(

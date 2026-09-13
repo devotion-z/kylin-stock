@@ -58,7 +58,7 @@ export async function exportMaterialRows(rows: Material[]) {
 
 export async function exportLedgerRows(rows: LedgerRow[]) {
   const data = [
-    ['流水号', '业务类型', '物资名称', '数量', '单位', '存放位置', '相关单位', '出库去向', '经办人', '领用人', '业务日期', '备注'],
+    ['流水号', '业务类型', '物资名称', '数量', '单位', '存放位置', '领用/来源单位', '经办人', '领用人', '业务日期', '备注'],
     ...rows.map((row) => [
       row.transaction_no,
       row.type === 'IN' ? '入库' : row.type === 'OUT' ? '出库' : '调整',
@@ -67,7 +67,6 @@ export async function exportLedgerRows(rows: LedgerRow[]) {
       row.unit_name ?? '',
       row.location_name,
       row.related_unit ?? '',
-      row.destination ?? '',
       row.handler ?? '',
       row.receiver ?? '',
       formatBusinessDate(row.occurred_at),
@@ -75,7 +74,7 @@ export async function exportLedgerRows(rows: LedgerRow[]) {
     ]),
   ]
   const sheet = XLSX.utils.aoa_to_sheet(data)
-  setColumnWidths(sheet, [24, 10, 20, 12, 10, 18, 18, 20, 12, 12, 20, 24])
+  setColumnWidths(sheet, [24, 10, 20, 12, 10, 18, 20, 12, 12, 20, 24])
   const book = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(book, sheet, '出入库明细')
   return saveWorkbook(book, `出入库明细_${safeDateStamp()}.xlsx`)

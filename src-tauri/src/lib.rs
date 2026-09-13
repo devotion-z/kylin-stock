@@ -19,6 +19,8 @@ pub fn run() {
             database::database_select,
             inventory::stock_in,
             inventory::stock_out,
+            inventory::stock_in_batch,
+            inventory::stock_out_batch,
             migration::initialize_database_schema
         ])
         .run(tauri::generate_context!())
