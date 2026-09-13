@@ -38,9 +38,10 @@ function setColumnWidths(sheet: XLSX.WorkSheet, widths: number[]) {
 
 export async function exportMaterialRows(rows: Material[]) {
   const data = [
-    ['物资名称', '计量单位', '分类', '存放位置', '备注', '状态'],
+    ['物资名称', '条码', '计量单位', '分类', '存放位置', '备注', '状态'],
     ...rows.map((row) => [
       row.name,
+      row.barcode ?? '',
       row.unit_name ?? '',
       row.category ?? '',
       row.location_name ?? '',
@@ -49,7 +50,7 @@ export async function exportMaterialRows(rows: Material[]) {
     ]),
   ]
   const sheet = XLSX.utils.aoa_to_sheet(data)
-  setColumnWidths(sheet, [22, 12, 16, 20, 28, 10])
+  setColumnWidths(sheet, [22, 18, 12, 16, 20, 28, 10])
   const book = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(book, sheet, '物资明细')
   return saveWorkbook(book, `物资明细_${safeDateStamp()}.xlsx`)
@@ -82,17 +83,17 @@ export async function exportLedgerRows(rows: LedgerRow[]) {
 
 export async function exportInventoryRows(rows: InventoryRow[]) {
   const data = [
-    ['物资名称', '单位', '存放位置', '当前库存', '最后更新时间'],
+    ['物资名称', '单位', '当前库存', '存放位置', '最后更新时间'],
     ...rows.map((row) => [
       row.material_name,
       row.unit_name ?? '',
-      row.location_name,
       row.quantity,
+      row.location_name,
       formatDateTime(row.updated_at),
     ]),
   ]
   const sheet = XLSX.utils.aoa_to_sheet(data)
-  setColumnWidths(sheet, [22, 10, 20, 14, 20])
+  setColumnWidths(sheet, [22, 10, 14, 20, 20])
   const book = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(book, sheet, '库存物资分布')
   return saveWorkbook(book, `库存物资分布_${safeDateStamp()}.xlsx`)

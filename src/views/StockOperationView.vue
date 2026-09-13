@@ -19,6 +19,8 @@ const locations = ref<Location[]>([])
 const pendingAttachments = ref<string[]>([])
 const relatedUnitOptions = ref<BusinessOption[]>([])
 const destinationOptions = ref<BusinessOption[]>([])
+const scanCode = ref('')
+const scanInput = ref<{ focus: () => void }>()
 const form = reactive({ materialId: undefined as number | undefined, locationId: undefined as number | undefined, quantity: '1', occurredAt: toLocalDateValue(), relatedUnit: '', destination: '', handler: '', receiver: '', remark: '' })
 
 async function load() {
@@ -40,10 +42,26 @@ function onMaterialChange(id: number) {
   if (material?.default_location_id) form.locationId = material.default_location_id
 }
 
+function handleScan() {
+  const code = scanCode.value.trim()
+  if (!code) return
+  const material = materials.value.find((item) => item.barcode?.trim() === code)
+  if (!material) {
+    ElMessage.warning(`未找到条码为“${code}”的启用物资，请先在物资管理中维护条码`)
+  } else {
+    form.materialId = material.id
+    onMaterialChange(material.id)
+    ElMessage.success(`已扫描：${material.name}`)
+  }
+  scanCode.value = ''
+  scanInput.value?.focus()
+}
+
 function reset() {
   if (submitting.value) return
   Object.assign(form, { materialId: undefined, locationId: undefined, quantity: '1', occurredAt: toLocalDateValue(), relatedUnit: '', destination: '', handler: '', receiver: '', remark: '' })
   pendingAttachments.value = []
+  scanCode.value = ''
 }
 
 async function submit() {
@@ -84,6 +102,7 @@ async function submit() {
     else ElMessage.success(isOut.value ? '出库登记成功' : '入库登记成功')
     Object.assign(form, { materialId: undefined, locationId: undefined, quantity: '1', occurredAt: toLocalDateValue(), relatedUnit: '', destination: '', handler: '', receiver: '', remark: '' })
     pendingAttachments.value = []
+    scanCode.value = ''
     ;[relatedUnitOptions.value, destinationOptions.value] = await Promise.all([
       listBusinessOptions('RELATED_UNIT'), listBusinessOptions('DESTINATION'),
     ])
@@ -102,16 +121,21 @@ onMounted(load)
     <template #header><strong>{{ isOut ? '出库登记' : '入库登记' }}</strong></template>
     <el-alert v-if="!materials.length && !loading" title="还没有可用物资，请先到“物资管理”新增并启用物资。" type="warning" :closable="false" show-icon style="margin-bottom:18px" />
     <el-form label-width="110px" style="max-width: 720px" :disabled="submitting">
+      <el-form-item label="扫描条码">
+        <el-input ref="scanInput" v-model="scanCode" clearable placeholder="使用扫码枪扫描后自动选择物资，或手动输入条码并回车" @keyup.enter="handleScan">
+          <template #append><el-button :disabled="!scanCode.trim()" @click="handleScan">识别</el-button></template>
+        </el-input>
+      </el-form-item>
       <el-form-item label="物资名称" required>
         <el-select v-model="form.materialId" filterable style="width:100%" placeholder="请选择物资" @change="onMaterialChange">
           <el-option v-for="item in materials" :key="item.id" :label="`${item.name}${item.unit_name ? `（${item.unit_name}）` : ''}`" :value="item.id" />
         </el-select>
       </el-form-item>
-      <el-form-item label="存放位置" required><el-select v-model="form.locationId" style="width:100%"><el-option v-for="item in locations" :key="item.id" :label="item.name" :value="item.id" /></el-select></el-form-item>
+      <el-form-item label="存放位置" required><el-select v-model="form.locationId" filterable style="width:100%" placeholder="请选择存放位置"><el-option v-for="item in locations" :key="item.id" :label="item.name" :value="item.id" /></el-select></el-form-item>
       <el-form-item :label="isOut ? '出库数量' : '入库数量'" required>
         <el-input v-model="form.quantity" inputmode="decimal" maxlength="18" placeholder="请输入数量，最多两位小数" />
       </el-form-item>
-      <el-form-item label="业务日期" required><el-date-picker v-model="form.occurredAt" type="date" value-format="YYYY-MM-DD" format="YYYY-MM-DD" :editable="false" placeholder="选择年月日" style="width:100%" /></el-form-item>
+      <el-form-item label="业务日期" required><el-date-picker v-model="form.occurredAt" type="date" value-format="YYYY-MM-DD" format="YYYY年MM月DD日" :editable="false" placeholder="选择年月日" style="width:100%" /></el-form-item>
       <el-form-item :label="isOut ? '领用单位' : '来源单位'">
         <el-select v-model="form.relatedUnit" clearable filterable allow-create default-first-option style="width:100%" placeholder="选择，或输入新单位后按回车">
           <el-option v-for="item in relatedUnitOptions" :key="item.id" :label="item.name" :value="item.name" />

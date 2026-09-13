@@ -118,7 +118,7 @@ export async function listInventory(filters: InventoryFilters | string = {}): Pr
         AND ($1='%%' OR m.name LIKE $1)
         AND ($2='%%' OR COALESCE(u.name,'') LIKE $2)
         AND ($3='%%' OR l.name LIKE $3)
-      ORDER BY m.name, l.name`, [keyword, unit, location]),
+      ORDER BY COALESCE(m.category, '') COLLATE NOCASE, l.name COLLATE NOCASE, m.name COLLATE NOCASE`, [keyword, unit, location]),
   )
 }
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { createLocation, createUnit, listLocations, listMaterials, listUnits, resolveLocationChoice, resolveUnitChoice, saveMaterial, setMaterialStatus, type Location, type MasterDataChoice, type Material, type Unit } from '../services/masterData'
+import { createLocation, createUnit, deleteMaterial, listLocations, listMaterials, listUnits, resolveLocationChoice, resolveUnitChoice, saveMaterial, setMaterialStatus, type Location, type MasterDataChoice, type Material, type Unit } from '../services/masterData'
 import { exportMaterialRows } from '../services/export'
 import AttachmentField from '../components/AttachmentField.vue'
 import { addAttachment, listAttachments, type Attachment } from '../services/attachments'
@@ -18,7 +18,7 @@ const dialogVisible = ref(false)
 const dialogTitle = ref('新增物资')
 const attachments = ref<Attachment[]>([])
 const pendingAttachments = ref<string[]>([])
-const form = reactive({ id: undefined as number | undefined, name: '', unitId: undefined as MasterDataChoice, category: '', locationId: undefined as MasterDataChoice, remark: '' })
+const form = reactive({ id: undefined as number | undefined, name: '', barcode: '', unitId: undefined as MasterDataChoice, category: '', locationId: undefined as MasterDataChoice, remark: '' })
 
 async function loadData(query: string) {
   ;[materials.value, units.value, locations.value] = await Promise.all([listMaterials(query), listUnits(), listLocations()])
@@ -45,7 +45,7 @@ function resetSearch() {
 
 function openCreate() {
   if (operationBusy.value) return
-  Object.assign(form, { id: undefined, name: '', unitId: undefined, category: '', locationId: undefined, remark: '' })
+  Object.assign(form, { id: undefined, name: '', barcode: '', unitId: undefined, category: '', locationId: undefined, remark: '' })
   dialogTitle.value = '新增物资'
   attachments.value = []
   pendingAttachments.value = []
@@ -54,7 +54,7 @@ function openCreate() {
 
 async function openEdit(row: Material) {
   if (operationBusy.value) return
-  Object.assign(form, { id: row.id, name: row.name, unitId: row.unit_id ?? undefined, category: row.category ?? '', locationId: row.default_location_id ?? undefined, remark: row.remark ?? '' })
+  Object.assign(form, { id: row.id, name: row.name, barcode: row.barcode ?? '', unitId: row.unit_id ?? undefined, category: row.category ?? '', locationId: row.default_location_id ?? undefined, remark: row.remark ?? '' })
   dialogTitle.value = '编辑物资'
   pendingAttachments.value = []
   dialogVisible.value = true
@@ -107,11 +107,24 @@ async function toggle(row: Material) {
   }
 }
 
+async function remove(row: Material) {
+  if (operationBusy.value) return
+  mutating.value = true
+  try {
+    await ElMessageBox.confirm(`确认删除物资“${row.name}”？删除后不可恢复。`, '删除确认', { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' })
+    await deleteMaterial(row.id)
+    ElMessage.success('物资已删除')
+    await loadData(keyword.value)
+  } catch (e) {
+    if (e !== 'cancel' && e !== 'close') ElMessage.error(e instanceof Error ? e.message : String(e))
+  } finally { mutating.value = false }
+}
+
 async function quickUnit() {
   if (operationBusy.value) return
   mutating.value = true
   try {
-    const { value } = await ElMessageBox.prompt('请输入计量单位，例如：个、箱、kg', '新增单位', { inputPattern: /\S+/, inputErrorMessage: '单位不能为空' })
+    const { value } = await ElMessageBox.prompt('请输入计量单位，例如：发、件、套、箱', '新增单位', { inputPattern: /\S+/, inputErrorMessage: '单位不能为空', confirmButtonText: '确定', cancelButtonText: '取消' })
     await createUnit(value)
     ElMessage.success('单位已添加')
     await loadData(keyword.value)
@@ -126,7 +139,7 @@ async function quickLocation() {
   if (operationBusy.value) return
   mutating.value = true
   try {
-    const { value } = await ElMessageBox.prompt('请输入存放位置，例如：一号库、A区货架', '新增存放位置', { inputPattern: /\S+/, inputErrorMessage: '位置不能为空' })
+    const { value } = await ElMessageBox.prompt('请输入存放位置，例如：建材一号库、日用品一号库', '新增存放位置', { inputPattern: /\S+/, inputErrorMessage: '位置不能为空', confirmButtonText: '确定', cancelButtonText: '取消' })
     await createLocation(value)
     ElMessage.success('位置已添加')
     await loadData(keyword.value)
@@ -175,18 +188,20 @@ onMounted(refresh)
     <el-table v-loading="loading" :data="materials" border stripe empty-text="暂无物资，请先新增">
       <el-table-column prop="name" label="物资名称" min-width="180" />
       <el-table-column prop="unit_name" label="单位" width="100" />
+      <el-table-column prop="barcode" label="条码" min-width="150" />
       <el-table-column prop="category" label="分类" min-width="130" />
       <el-table-column prop="location_name" label="存放位置" min-width="160" />
       <el-table-column prop="remark" label="备注" min-width="180" show-overflow-tooltip />
       <el-table-column label="单据图片" width="100"><template #default="{ row }">{{ row.attachment_count ? `${row.attachment_count} 张` : '-' }}</template></el-table-column>
       <el-table-column label="状态" width="90"><template #default="{ row }"><el-tag :type="row.status === 1 ? 'success' : 'info'">{{ row.status === 1 ? '正常' : '停用' }}</el-tag></template></el-table-column>
-      <el-table-column label="操作" width="180"><template #default="{ row }"><el-button link type="primary" :disabled="operationBusy" @click="openEdit(row)">编辑</el-button><el-button link :disabled="operationBusy" :type="row.status === 1 ? 'danger' : 'success'" @click="toggle(row)">{{ row.status === 1 ? '停用' : '启用' }}</el-button></template></el-table-column>
+      <el-table-column label="操作" width="240"><template #default="{ row }"><el-button link type="primary" :disabled="operationBusy" @click="openEdit(row)">编辑</el-button><el-button link :disabled="operationBusy" :type="row.status === 1 ? 'danger' : 'success'" @click="toggle(row)">{{ row.status === 1 ? '停用' : '启用' }}</el-button><el-button link type="danger" :disabled="operationBusy" @click="remove(row)">删除</el-button></template></el-table-column>
     </el-table>
   </el-card>
 
   <el-dialog v-model="dialogVisible" :title="dialogTitle" width="520px" :close-on-click-modal="!mutating" :close-on-press-escape="!mutating" :show-close="!mutating">
     <el-form label-width="110px" :disabled="mutating">
       <el-form-item label="物资名称" required><el-input v-model="form.name" maxlength="100" /></el-form-item>
+      <el-form-item label="物资条码"><el-input v-model="form.barcode" maxlength="100" clearable placeholder="可填条码，供扫码出入库使用" /></el-form-item>
       <el-form-item label="计量单位">
         <el-select v-model="form.unitId" clearable filterable allow-create default-first-option style="width:100%" placeholder="请选择，或输入新单位后按回车" no-data-text="输入单位名称后按回车创建">
           <el-option v-for="item in units" :key="item.id" :label="item.name" :value="item.id" />

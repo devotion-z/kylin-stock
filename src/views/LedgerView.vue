@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import dayjs from 'dayjs'
 import { ElMessage } from 'element-plus'
 import { listLedger, type LedgerRow } from '../services/inventory'
+import { listMaterials, type Material } from '../services/masterData'
 import { exportLedgerRows } from '../services/export'
 import { formatBusinessDate } from '../utils/date'
 import AttachmentField from '../components/AttachmentField.vue'
@@ -17,6 +18,7 @@ const filters = reactive({ material: '', type: 'ALL', relatedUnit: '', destinati
 const attachmentDialogVisible = ref(false)
 const attachmentDialogTitle = ref('单据图片')
 const attachments = ref<Attachment[]>([])
+const materialOptions = ref<Material[]>([])
 
 async function showAttachments(row: LedgerRow) {
   try {
@@ -44,6 +46,10 @@ async function refresh() {
   }
 }
 
+async function loadMaterialOptions() {
+  try { materialOptions.value = await listMaterials() } catch (e) { ElMessage.error(`物资列表加载失败：${e instanceof Error ? e.message : String(e)}`) }
+}
+
 function reset() {
   if (operationBusy.value) return
   Object.assign(filters, { material: '', type: 'ALL', relatedUnit: '', destination: '' })
@@ -68,13 +74,15 @@ async function exportCurrent() {
   }
 }
 
-onMounted(refresh)
+onMounted(() => { refresh(); loadMaterialOptions() })
 </script>
 
 <template>
   <el-card shadow="never">
     <div class="toolbar">
-      <el-input v-model="filters.material" :disabled="operationBusy" clearable placeholder="物资名称" style="width:180px" />
+      <el-select v-model="filters.material" :disabled="operationBusy" clearable filterable placeholder="物资名称" style="width:180px">
+        <el-option v-for="item in materialOptions" :key="item.id" :label="item.name" :value="item.name" />
+      </el-select>
       <el-date-picker
         v-model="dateRange"
         :disabled="operationBusy"
@@ -83,6 +91,7 @@ onMounted(refresh)
         start-placeholder="开始日期"
         end-placeholder="结束日期"
         range-separator="至"
+        format="YYYY年MM月DD日"
         style="width:260px"
       />
       <el-input v-model="filters.relatedUnit" :disabled="operationBusy" clearable placeholder="单位" style="width:170px" />

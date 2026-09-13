@@ -3,7 +3,7 @@ use std::{fs, path::PathBuf, str::FromStr, time::Duration};
 use tauri::AppHandle;
 
 const DATABASE_FILE: &str = "kylin-stock.db";
-pub(crate) const LATEST_SCHEMA_VERSION: i64 = 4;
+pub(crate) const LATEST_SCHEMA_VERSION: i64 = 5;
 
 struct Migration {
     version: i64,
@@ -136,6 +136,13 @@ const MIGRATIONS: &[Migration] = &[
             "CREATE INDEX IF NOT EXISTS idx_business_options_kind_name ON business_options(kind, name)",
         ],
     },
+    Migration {
+        version: 5,
+        statements: &[
+            "ALTER TABLE materials ADD COLUMN barcode TEXT",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_materials_barcode ON materials(barcode) WHERE barcode IS NOT NULL AND barcode <> ''",
+        ],
+    },
 ];
 
 fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -193,10 +200,22 @@ pub(crate) async fn run_migrations_on_connection(
 
         let result: Result<(), String> = async {
             for statement in migration.statements {
-                sqlx::query(statement)
-                    .execute(&mut *connection)
-                    .await
-                    .map_err(|e| format!("数据库升级 v{} 执行失败：{e}", migration.version))?;
+                if let Err(error) = sqlx::query(statement).execute(&mut *connection).await {
+                    // `ALTER TABLE ... ADD COLUMN` has no portable SQLite
+                    // IF NOT EXISTS form. A legacy/unversioned database may
+                    // already contain the column while still needing the
+                    // migration's remaining statements (for example, its
+                    // index), so treat this one idempotent case as success.
+                    if !(migration.version == 5
+                        && statement.contains("ALTER TABLE materials ADD COLUMN")
+                        && error.to_string().contains("duplicate column name"))
+                    {
+                        return Err(format!(
+                            "数据库升级 v{} 执行失败：{error}",
+                            migration.version
+                        ));
+                    }
+                }
             }
 
             let set_version = format!("PRAGMA user_version = {}", migration.version);

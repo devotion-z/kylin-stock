@@ -7,6 +7,7 @@ interface NamedChoice { id: number; name: string }
 export interface Material {
   id: number
   name: string
+  barcode: string | null
   unit_id: number | null
   unit_name: string | null
   category: string | null
@@ -76,7 +77,7 @@ export async function listMaterials(keyword = ''): Promise<Material[]> {
   const q = `%${keyword.trim()}%`
   return withDatabaseAccess(async () =>
     (await getDatabase()).select<Material[]>(`
-      SELECT m.id, m.name, m.unit_id, u.name AS unit_name, m.category,
+      SELECT m.id, m.name, m.barcode, m.unit_id, u.name AS unit_name, m.category,
              m.default_location_id, l.name AS location_name, m.remark,
              m.status, m.created_at, m.updated_at,
              (SELECT COUNT(*) FROM attachments a WHERE a.entity_type='MATERIAL' AND a.entity_id=m.id) AS attachment_count
@@ -92,6 +93,7 @@ export async function listMaterials(keyword = ''): Promise<Material[]> {
 export async function saveMaterial(input: {
   id?: number
   name: string
+  barcode?: string
   unitId?: number | null
   category?: string
   locationId?: number | null
@@ -100,6 +102,7 @@ export async function saveMaterial(input: {
   const normalized = {
     id: input.id,
     name: input.name.trim(),
+    barcode: input.barcode?.trim() || null,
     unitId: input.unitId ?? null,
     category: input.category?.trim() || null,
     locationId: input.locationId ?? null,
@@ -127,20 +130,46 @@ export async function saveMaterial(input: {
         : '已存在同名物资，请勿重复添加')
     }
 
+    if (normalized.barcode) {
+      const barcodeConflicts = await db.select<{ id: number }[]>(`
+        SELECT id FROM materials WHERE barcode = $1 AND ($2 IS NULL OR id <> $2) LIMIT 1
+      `, [normalized.barcode, normalized.id ?? null])
+      if (barcodeConflicts.length) throw new Error('条码已被其他物资使用，请更换后再保存')
+    }
+
     const timestamp = now()
     if (normalized.id) {
-      return db.execute(`UPDATE materials SET name=$1, unit_id=$2, category=$3,
-        default_location_id=$4, remark=$5, updated_at=$6 WHERE id=$7`, [
-        normalized.name, normalized.unitId, normalized.category,
+      return db.execute(`UPDATE materials SET name=$1, barcode=$2, unit_id=$3, category=$4,
+        default_location_id=$5, remark=$6, updated_at=$7 WHERE id=$8`, [
+        normalized.name, normalized.barcode, normalized.unitId, normalized.category,
         normalized.locationId, normalized.remark, timestamp, normalized.id,
       ])
     }
     return db.execute(`INSERT INTO materials
-      (name, unit_id, category, default_location_id, remark, status, created_at, updated_at)
-      VALUES ($1,$2,$3,$4,$5,1,$6,$6)`, [
-      normalized.name, normalized.unitId, normalized.category,
+      (name, barcode, unit_id, category, default_location_id, remark, status, created_at, updated_at)
+      VALUES ($1,$2,$3,$4,$5,$6,1,$7,$7)`, [
+      normalized.name, normalized.barcode, normalized.unitId, normalized.category,
       normalized.locationId, normalized.remark, timestamp,
     ])
+  })
+}
+
+export async function deleteMaterial(id: number) {
+  const materialId = Number(id)
+  return withDatabaseMutation(async () => {
+    const db = await getDatabase()
+    const used = await db.select<{ count: number }[]>(
+      `SELECT COUNT(*) AS count FROM stock_transactions WHERE material_id=$1`, [materialId],
+    )
+    const balances = await db.select<{ count: number }[]>(
+      `SELECT COUNT(*) AS count FROM inventory_balances WHERE material_id=$1 AND quantity <> 0`, [materialId],
+    )
+    if (Number(used[0]?.count ?? 0) > 0 || Number(balances[0]?.count ?? 0) > 0) {
+      throw new Error('该物资已有库存或出入库记录，不能删除，请先停用')
+    }
+    await db.execute(`DELETE FROM attachments WHERE entity_type='MATERIAL' AND entity_id=$1`, [materialId])
+    await db.execute('DELETE FROM inventory_balances WHERE material_id=$1', [materialId])
+    return db.execute('DELETE FROM materials WHERE id=$1', [materialId])
   })
 }
 
