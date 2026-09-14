@@ -21,7 +21,17 @@ export async function chooseAttachmentImages(): Promise<string[]> {
     filters: [{ name: '图片', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'] }],
   })
   if (!selected) return []
-  return Array.isArray(selected) ? selected : [selected]
+  const paths = Array.isArray(selected) ? selected : [selected]
+  return paths.map(normalizeNativePath)
+}
+
+export function normalizeNativePath(value: string) {
+  if (!value.startsWith('file://')) return value
+  try {
+    return decodeURIComponent(new URL(value).pathname)
+  } catch {
+    return value.replace(/^file:\/\//, '')
+  }
 }
 
 export function listAttachments(entityType: AttachmentEntityType, entityId: number) {

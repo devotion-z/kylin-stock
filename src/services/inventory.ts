@@ -58,6 +58,17 @@ export interface StockOperationInput {
   adjustmentBasis?: string
 }
 
+export interface StockTransferInput {
+  materialId: number
+  fromLocationId: number
+  toLocationId: number
+  quantity: number
+  occurredAt: string
+  handler?: string
+  remark?: string
+  adjustmentBasis?: string
+}
+
 function snapshotStockInput(input: StockOperationInput): StockOperationInput {
   return {
     materialId: Number(input.materialId),
@@ -109,6 +120,18 @@ export async function stockOutBatch(inputs: StockOperationInput[]) {
 export function deleteStockTransaction(id: number) {
   if (!Number.isInteger(id) || id <= 0) throw new Error('无效的流水记录')
   return withDatabaseMutation(() => invoke<void>('delete_stock_transaction', { id }))
+}
+
+export function transferStock(input: StockTransferInput) {
+  if (!input.materialId || !input.fromLocationId || !input.toLocationId) throw new Error('请选择物资和库位')
+  if (input.fromLocationId === input.toLocationId) throw new Error('转入库位不能与原库位相同')
+  if (!Number.isFinite(input.quantity) || input.quantity <= 0) throw new Error('转移数量必须大于 0')
+  return withDatabaseMutation(() => invoke<void>('transfer_stock', { input }))
+}
+
+export function deleteInventoryPosition(materialId: number, locationId: number) {
+  if (!materialId || !locationId) throw new Error('无效的物资或存放位置')
+  return withDatabaseMutation(() => invoke<void>('delete_inventory_position', { materialId, locationId }))
 }
 
 export function scanDocument(sourcePath: string) {

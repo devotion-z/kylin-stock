@@ -21,6 +21,19 @@ pub struct StockOperationInput {
     adjustment_basis: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StockTransferInput {
+    material_id: i64,
+    from_location_id: i64,
+    to_location_id: i64,
+    quantity: f64,
+    occurred_at: String,
+    handler: Option<String>,
+    remark: Option<String>,
+    adjustment_basis: Option<String>,
+}
+
 fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
     let app_config = app
         .path_resolver()
@@ -442,6 +455,123 @@ pub async fn delete_stock_transaction(app: AppHandle, id: i64) -> Result<(), Str
     }
 }
 
+/// Move stock between two locations and record both sides of the internal
+/// transfer so inventory, distribution and ledger views stay consistent.
+#[tauri::command]
+pub async fn transfer_stock(app: AppHandle, input: StockTransferInput) -> Result<(), String> {
+    if input.material_id <= 0 || input.from_location_id <= 0 || input.to_location_id <= 0 {
+        return Err("请选择物资和库位".into());
+    }
+    if input.from_location_id == input.to_location_id {
+        return Err("转入库位不能与原库位相同".into());
+    }
+    if !input.quantity.is_finite() || input.quantity <= 0.0 {
+        return Err("转移数量必须大于 0".into());
+    }
+    let scaled = input.quantity * 100.0;
+    if (scaled - scaled.round()).abs() > 1e-7 {
+        return Err("数量最多只能有两位小数，系统不会自动四舍五入".into());
+    }
+    if input.occurred_at.trim().is_empty() {
+        return Err("请选择业务日期".into());
+    }
+
+    let mut connection = open_connection(&app).await?;
+    begin_immediate(&mut connection).await?;
+    let result: Result<(), String> = async {
+        let source_name = sqlx::query_scalar::<_, String>("SELECT name FROM locations WHERE id=?")
+            .bind(input.from_location_id)
+            .fetch_optional(&mut connection)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "原存放位置不存在或已停用".to_string())?;
+        let target_name = sqlx::query_scalar::<_, String>("SELECT name FROM locations WHERE id=? AND status=1")
+            .bind(input.to_location_id)
+            .fetch_optional(&mut connection)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "转入存放位置不存在或已停用".to_string())?;
+
+        let update = sqlx::query(
+            "UPDATE inventory_balances SET quantity=quantity-?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE material_id=? AND location_id=? AND quantity>=?",
+        )
+        .bind(input.quantity)
+        .bind(input.material_id)
+        .bind(input.from_location_id)
+        .bind(input.quantity)
+        .execute(&mut connection)
+        .await
+        .map_err(|e| e.to_string())?;
+        if update.rows_affected() != 1 {
+            return Err("原库位库存不足，转库已取消".into());
+        }
+
+        sqlx::query(
+            "INSERT INTO inventory_balances(material_id,location_id,quantity,updated_at) VALUES (?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now')) ON CONFLICT(material_id,location_id) DO UPDATE SET quantity=quantity+excluded.quantity, updated_at=excluded.updated_at",
+        )
+        .bind(input.material_id)
+        .bind(input.to_location_id)
+        .bind(input.quantity)
+        .execute(&mut connection)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        let basis = clean(&input.adjustment_basis).unwrap_or_else(|| "库内调拨".to_string());
+        let remark = clean(&input.remark).unwrap_or_else(|| format!("库内调拨：{source_name} → {target_name}"));
+        let out_no = transaction_no("TRANSFER-OUT");
+        let in_no = transaction_no("TRANSFER-IN");
+        sqlx::query("INSERT INTO stock_transactions(transaction_no,type,material_id,location_id,quantity,occurred_at,related_unit,destination,handler,receiver,remark,adjustment_basis,created_at) VALUES (?,'OUT',?,?,?,?, '库内调拨',?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))")
+            .bind(&out_no).bind(input.material_id).bind(input.from_location_id).bind(input.quantity)
+            .bind(input.occurred_at.trim()).bind(&target_name).bind(clean(&input.handler))
+            .bind(None::<String>).bind(&remark).bind(&basis).execute(&mut connection).await.map_err(|e| e.to_string())?;
+        sqlx::query("INSERT INTO stock_transactions(transaction_no,type,material_id,location_id,quantity,occurred_at,related_unit,destination,handler,receiver,remark,adjustment_basis,created_at) VALUES (?,'IN',?,?,?,?, '库内调拨',NULL,?,?,?, ?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))")
+            .bind(&in_no).bind(input.material_id).bind(input.to_location_id).bind(input.quantity)
+            .bind(input.occurred_at.trim()).bind(clean(&input.handler))
+            .bind(None::<String>).bind(&remark).bind(&basis).execute(&mut connection).await.map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    .await;
+    match result {
+        Ok(()) => commit(&mut connection).await,
+        Err(error) => {
+            rollback(&mut connection).await;
+            Err(format!("转库失败：{error}"))
+        }
+    }
+}
+
+/// Remove a material's balance and all ledger rows for one location. This is
+/// deliberately explicit because it is intended for cleaning test data.
+#[tauri::command]
+pub async fn delete_inventory_position(
+    app: AppHandle,
+    material_id: i64,
+    location_id: i64,
+) -> Result<(), String> {
+    if material_id <= 0 || location_id <= 0 {
+        return Err("无效的物资或存放位置".into());
+    }
+    let mut connection = open_connection(&app).await?;
+    begin_immediate(&mut connection).await?;
+    let result: Result<(), String> = async {
+        let deleted = sqlx::query("DELETE FROM attachments WHERE entity_type='TRANSACTION' AND entity_id IN (SELECT id FROM stock_transactions WHERE material_id=? AND location_id=?)")
+            .bind(material_id).bind(location_id).execute(&mut connection).await.map_err(|e| e.to_string())?;
+        let _ = deleted;
+        sqlx::query("DELETE FROM stock_transactions WHERE material_id=? AND location_id=?")
+            .bind(material_id).bind(location_id).execute(&mut connection).await.map_err(|e| e.to_string())?;
+        sqlx::query("DELETE FROM inventory_balances WHERE material_id=? AND location_id=?")
+            .bind(material_id).bind(location_id).execute(&mut connection).await.map_err(|e| e.to_string())?;
+        Ok(())
+    }.await;
+    match result {
+        Ok(()) => commit(&mut connection).await,
+        Err(error) => {
+            rollback(&mut connection).await;
+            Err(format!("清除库存失败：{error}"))
+        }
+    }
+}
+
 /// Run the optional system OCR engine against a scanned transfer document.
 /// Kylin deployments can install tesseract-ocr-chi-sim; the UI treats the
 /// returned text as a draft and always lets the operator verify quantities.
@@ -451,12 +581,45 @@ pub async fn scan_document(source_path: String) -> Result<String, String> {
     if path.is_empty() {
         return Err("请选择扫描单据图片".into());
     }
+    let source = if let Some(path) = path.strip_prefix("file://") {
+        PathBuf::from(path)
+    } else {
+        PathBuf::from(path)
+    };
+    if !source.is_file() {
+        return Err(format!(
+            "扫描单据文件不存在或无法读取：{}",
+            source.display()
+        ));
+    }
+
+    // Use a short ASCII temporary path. This avoids tesseract/pixRead failures
+    // on some Kylin builds when the selected image path contains Chinese
+    // characters, spaces, URI prefixes, or a transient clipboard directory.
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("img");
+    let temporary = std::env::temp_dir().join(format!(
+        "kylin-stock-ocr-{}.{}",
+        Uuid::new_v4().simple(),
+        extension
+    ));
+    fs::copy(&source, &temporary).map_err(|error| format!("无法准备扫描单据：{error}"))?;
+    let temporary_path = temporary.to_string_lossy().to_string();
     let output = Command::new("tesseract")
-        .args([path, "stdout", "-l", "chi_sim+eng", "--psm", "6"])
+        .args([
+            temporary_path.as_str(),
+            "stdout",
+            "-l",
+            "chi_sim+eng",
+            "--psm",
+            "6",
+        ])
         .output()
-        .map_err(|_| {
-            "未检测到 OCR 引擎，请在麒麟系统安装 tesseract-ocr 和中文语言包".to_string()
-        })?;
+        .map_err(|_| "未检测到 OCR 引擎，请在麒麟系统安装 tesseract-ocr 和中文语言包".to_string());
+    let _ = fs::remove_file(&temporary);
+    let output = output?;
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(if detail.is_empty() {
