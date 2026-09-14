@@ -74,8 +74,8 @@ onMounted(refresh)
       <el-table v-if="categoryInventory.length" :data="categoryInventory" border stripe size="small">
         <el-table-column prop="material_name" label="物资名称" min-width="180" />
         <el-table-column prop="unit_name" label="计量单位" width="110" />
-        <el-table-column prop="location_name" label="存放位置" min-width="150" />
         <el-table-column prop="quantity" label="当前库存" width="120" />
+        <el-table-column prop="location_name" label="存放位置" min-width="150" />
       </el-table>
       <el-empty v-else description="该分类暂无库存" />
     </el-card>

@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/tauri'
-import { open, save } from '@tauri-apps/api/dialog'
+import { open } from '@tauri-apps/api/dialog'
+import { join } from '@tauri-apps/api/path'
 import { checkDatabaseIntegrity, closeDatabase, getDatabase, reopenDatabase, withDatabaseAccess, withDatabaseMutation } from './database'
 
 export type BackupType = 'MANUAL' | 'ANNUAL'
@@ -142,12 +143,16 @@ export async function createBackup(type: BackupType, year?: number) {
     ? `KylinStock_${year}年度备份_${stamp()}.db`
     : `KylinStock_即时备份_${stamp()}.db`
 
-  const destination = await save({
-    title: type === 'ANNUAL' ? '保存年度数据备份' : '保存数据备份',
-    defaultPath: defaultName,
-    filters: [{ name: 'KylinStock 数据库备份', extensions: ['db'] }],
+  // Native save dialogs expose OS-level buttons (often English on a mixed
+  // Kylin installation). Choose a folder instead, then keep the whole save
+  // confirmation in the application's Chinese UI with a deterministic name.
+  const directory = await open({
+    title: type === 'ANNUAL' ? '选择年度备份保存文件夹' : '选择数据备份保存文件夹',
+    multiple: false,
+    directory: true,
   })
-  if (!destination) return null
+  if (typeof directory !== 'string' || !directory) return null
+  const destination = await join(directory, defaultName)
 
   return withDatabaseMutation(async () => {
     // Rust uses SQLite VACUUM INTO to produce a transactional snapshot. Holding

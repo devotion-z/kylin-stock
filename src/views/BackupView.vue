@@ -96,13 +96,13 @@ onMounted(refresh)
       <div class="actions">
         <div class="action-block">
           <div class="action-title">即时备份</div>
-          <div class="action-desc">适合日常操作前、重要数据录入后随时创建。</div>
+          <div class="action-desc">选择保存文件夹后自动生成中文备份文件名，适合日常操作前、重要数据录入后随时创建。</div>
           <el-button type="primary" :loading="backingUp" :disabled="operationBusy" @click="runBackup('MANUAL')">创建即时备份</el-button>
         </div>
 
         <div class="action-block">
           <div class="action-title">年度归档</div>
-          <div class="action-desc">为指定年度创建明确标记的归档副本。</div>
+          <div class="action-desc">选择保存文件夹后为指定年度创建明确标记的归档副本。</div>
           <div class="annual-row">
             <el-input-number v-model="year" :min="2000" :max="2100" :step="1" :controls="false" :disabled="operationBusy" style="width:120px" />
             <el-button type="success" :loading="backingUp" :disabled="operationBusy" @click="runBackup('ANNUAL')">创建年度备份</el-button>
