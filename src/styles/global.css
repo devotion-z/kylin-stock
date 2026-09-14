@@ -16,6 +16,16 @@ body { overflow: hidden; }
 .brand-mark { width: 42px; height: 42px; display: block; border-radius: 10px; object-fit: cover; }
 .brand strong { display: block; color: #155eef; font-size: 20px; line-height: 1.2; letter-spacing: 1px; white-space: nowrap; }
 .nav-menu { flex: 1; border-right: 0 !important; padding-top: 10px; }
+.nav-menu .el-menu-item { margin: 3px 10px; border-radius: 8px; transition: background-color .18s ease, color .18s ease; }
+.nav-menu .el-menu-item.is-active { background: #eaf2ff; color: #155eef; font-weight: 600; }
+.nav-menu .el-menu-item:nth-child(1) .el-icon { color: #409eff; }
+.nav-menu .el-menu-item:nth-child(2) .el-icon { color: #8e62d9; }
+.nav-menu .el-menu-item:nth-child(3) .el-icon { color: #67c23a; }
+.nav-menu .el-menu-item:nth-child(4) .el-icon { color: #e6a23c; }
+.nav-menu .el-menu-item:nth-child(5) .el-icon { color: #13c2c2; }
+.nav-menu .el-menu-item:nth-child(6) .el-icon { color: #f56c6c; }
+.nav-menu .el-menu-item:nth-child(7) .el-icon { color: #5b8ff9; }
+.nav-menu .el-menu-item:nth-child(8) .el-icon { color: #7f8c8d; }
 .sidebar-footer { padding: 14px 18px; font-size: 12px; color: #9ca3af; border-top: 1px solid #eef0f3; }
 .topbar { height: 76px; display: flex; align-items: center; justify-content: space-between; padding: 0 24px; background: #fff; border-bottom: 1px solid #e5e7eb; }
 .topbar h1 { margin: 0; color: #173b72; font-size: 22px; }

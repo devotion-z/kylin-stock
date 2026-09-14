@@ -19,6 +19,8 @@ const locations = ref<Location[]>([])
 const pendingAttachments = ref<string[]>([])
 const relatedUnitOptions = ref<BusinessOption[]>([])
 const scanCode = ref('')
+const scanTextPreview = ref('')
+const scanMatchedCount = ref(0)
 const scanInput = ref<{ focus: () => void }>()
 interface OperationLine { materialId?: number; locationId?: number; quantity: string }
 const lines = ref<OperationLine[]>([{ quantity: '1' }])
@@ -73,15 +75,18 @@ async function importScannedDocument() {
     const selected = await chooseAttachmentImages()
     if (!selected.length) return
     const text = await scanDocument(selected[0])
+    scanTextPreview.value = text.trim()
     const detected: OperationLine[] = []
     const textLines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
     for (const material of materials.value) {
       const matched = textLines.find((line) => line.includes(material.name))
       if (!matched) continue
-      const numbers = matched.match(/\d+(?:[.,]\d{1,2})?/g) ?? []
-      const quantity = numbers.length ? numbers[numbers.length - 1].replace(',', '.') : '1'
+      const numbers = matched.match(/\d+(?:[.,]\d+)?/g) ?? []
+      const rawQuantity = numbers.length ? numbers[numbers.length - 1].replace(',', '.') : '1'
+      const quantity = rawQuantity.replace(/\.0+$/, '').replace(/(\.\d*?[1-9])0+$/, '$1')
       detected.push({ materialId: material.id, locationId: material.default_location_id ?? undefined, quantity })
     }
+    scanMatchedCount.value = detected.length
     pendingAttachments.value = [...new Set([...pendingAttachments.value, selected[0]])].slice(0, 10)
     if (detected.length) {
       lines.value = detected
@@ -98,6 +103,8 @@ function reset() {
   lines.value = [{ quantity: '1' }]
   pendingAttachments.value = []
   scanCode.value = ''
+  scanTextPreview.value = ''
+  scanMatchedCount.value = 0
 }
 
 async function submit() {
@@ -140,6 +147,8 @@ async function submit() {
     lines.value = [{ quantity: '1' }]
     pendingAttachments.value = []
     scanCode.value = ''
+    scanTextPreview.value = ''
+    scanMatchedCount.value = 0
     relatedUnitOptions.value = await listBusinessOptions('RELATED_UNIT')
   } catch (e) { ElMessage.error(e instanceof Error ? e.message : String(e)) }
   finally { submitting.value = false }
@@ -161,7 +170,13 @@ onMounted(load)
           <template #append><el-button :disabled="!scanCode.trim()" @click="handleScan">识别</el-button></template>
         </el-input>
       </el-form-item>
-      <el-form-item label="扫描单据"><el-button plain :disabled="submitting" @click="importScannedDocument">选择扫描单据并识别</el-button><span class="scan-hint">识别后会自动填充物资和数量，提交前请人工核对</span></el-form-item>
+      <el-form-item label="扫描单据">
+        <div class="scan-box">
+          <div><el-button plain :disabled="submitting" @click="importScannedDocument">选择扫描单据并识别</el-button><span class="scan-hint">支持扫描图片；识别后自动填充物资和数量，提交前必须人工核对</span></div>
+          <el-alert v-if="scanTextPreview" :title="`已识别 ${scanMatchedCount} 项物资，原始文字仅供核对`" type="success" :closable="false" show-icon />
+          <el-input v-if="scanTextPreview" v-model="scanTextPreview" type="textarea" :rows="4" readonly class="scan-preview" />
+        </div>
+      </el-form-item>
       <el-form-item :label="isOut ? '出库物资明细' : '入库物资明细'" required>
         <div class="line-list">
           <div v-for="(line, index) in lines" :key="index" class="operation-line">
@@ -200,6 +215,9 @@ onMounted(load)
 .line-material { flex: 1.5; min-width: 180px; }
 .line-location { flex: 1; min-width: 150px; }
 .line-quantity { width: 130px; }
+.scan-box { width: 100%; }
+.scan-box .el-alert { margin-top: 8px; }
+.scan-preview { margin-top: 8px; }
 .scan-hint { margin-left: 10px; color: var(--el-text-color-secondary); font-size: 12px; }
 @media (max-width: 760px) { .operation-line { flex-wrap: wrap; } .line-material, .line-location { min-width: 45%; } }
 </style>
