@@ -28,3 +28,7 @@ export async function ensureBusinessOption(kind: BusinessOptionKind, name: strin
   )
   return normalized
 }
+
+export async function deleteBusinessOption(id: number) {
+  return withDatabaseMutation(() => (getDatabase()).then((db) => db.execute('DELETE FROM business_options WHERE id=$1', [Number(id)])))
+}

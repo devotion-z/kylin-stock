@@ -3,7 +3,7 @@ use std::{fs, path::PathBuf, str::FromStr, time::Duration};
 use tauri::AppHandle;
 
 const DATABASE_FILE: &str = "kylin-stock.db";
-pub(crate) const LATEST_SCHEMA_VERSION: i64 = 5;
+pub(crate) const LATEST_SCHEMA_VERSION: i64 = 6;
 
 struct Migration {
     version: i64,
@@ -143,6 +143,10 @@ const MIGRATIONS: &[Migration] = &[
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_materials_barcode ON materials(barcode) WHERE barcode IS NOT NULL AND barcode <> ''",
         ],
     },
+    Migration {
+        version: 6,
+        statements: &["ALTER TABLE stock_transactions ADD COLUMN adjustment_basis TEXT"],
+    },
 ];
 
 fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -206,9 +210,11 @@ pub(crate) async fn run_migrations_on_connection(
                     // already contain the column while still needing the
                     // migration's remaining statements (for example, its
                     // index), so treat this one idempotent case as success.
-                    if !(migration.version == 5
-                        && statement.contains("ALTER TABLE materials ADD COLUMN")
-                        && error.to_string().contains("duplicate column name"))
+                    if !((migration.version == 5
+                        && statement.contains("ALTER TABLE materials ADD COLUMN"))
+                        || (migration.version == 6
+                            && statement.contains("ALTER TABLE stock_transactions ADD COLUMN")))
+                        || !error.to_string().contains("duplicate column name")
                     {
                         return Err(format!(
                             "数据库升级 v{} 执行失败：{error}",

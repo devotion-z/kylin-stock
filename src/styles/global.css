@@ -14,8 +14,7 @@ body { overflow: hidden; }
 .sidebar { display: flex; flex-direction: column; background: #fff; border-right: 1px solid #e5e7eb; }
 .brand { height: 76px; display: flex; align-items: center; gap: 12px; padding: 0 20px; border-bottom: 1px solid #eef0f3; }
 .brand-mark { width: 42px; height: 42px; display: block; border-radius: 10px; object-fit: cover; }
-.brand strong, .brand small { display: block; }
-.brand small { margin-top: 3px; color: #9ca3af; }
+.brand strong { display: block; font-size: 18px; letter-spacing: 1px; }
 .nav-menu { flex: 1; border-right: 0 !important; padding-top: 10px; }
 .sidebar-footer { padding: 14px 18px; font-size: 12px; color: #9ca3af; border-top: 1px solid #eef0f3; }
 .topbar { height: 76px; display: flex; align-items: center; justify-content: space-between; padding: 0 24px; background: #fff; border-bottom: 1px solid #e5e7eb; }

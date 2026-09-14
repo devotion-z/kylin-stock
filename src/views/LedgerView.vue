@@ -14,7 +14,7 @@ const exporting = ref(false)
 const operationBusy = computed(() => loading.value || exporting.value)
 const rows = ref<LedgerRow[]>([])
 const dateRange = ref<string[]>([])
-const filters = reactive({ material: '', type: 'ALL', relatedUnit: '' })
+const filters = reactive({ basis: '', material: '', type: 'ALL', relatedUnit: '' })
 const attachmentDialogVisible = ref(false)
 const attachmentDialogTitle = ref('单据图片')
 const attachments = ref<Attachment[]>([])
@@ -52,7 +52,7 @@ async function loadMaterialOptions() {
 
 function reset() {
   if (operationBusy.value) return
-  Object.assign(filters, { material: '', type: 'ALL', relatedUnit: '' })
+  Object.assign(filters, { basis: '', material: '', type: 'ALL', relatedUnit: '' })
   dateRange.value = []
   refresh()
 }
@@ -80,6 +80,7 @@ onMounted(() => { refresh(); loadMaterialOptions() })
 <template>
   <el-card shadow="never">
     <div class="toolbar">
+      <el-input v-model="filters.basis" :disabled="operationBusy" clearable placeholder="调拨依据" style="width:180px" />
       <el-select v-model="filters.material" :disabled="operationBusy" clearable filterable placeholder="物资名称" style="width:180px">
         <el-option v-for="item in materialOptions" :key="item.id" :label="item.name" :value="item.name" />
       </el-select>
@@ -118,6 +119,7 @@ onMounted(() => { refresh(); loadMaterialOptions() })
 
     <el-table v-loading="loading" :data="rows" border stripe empty-text="暂无出入库记录">
       <el-table-column prop="transaction_no" label="流水号" min-width="190" />
+      <el-table-column prop="adjustment_basis" label="调拨依据" min-width="150" />
       <el-table-column label="类型" width="90">
         <template #default="{row}">
           <el-tag :type="row.type==='IN'?'success':row.type==='OUT'?'warning':'info'">
@@ -126,8 +128,8 @@ onMounted(() => { refresh(); loadMaterialOptions() })
         </template>
       </el-table-column>
       <el-table-column prop="material_name" label="物资名称" min-width="160" />
-      <el-table-column prop="quantity" label="数量" width="110" />
       <el-table-column prop="unit_name" label="计量单位" width="100" />
+      <el-table-column prop="quantity" label="数量" width="110" />
       <el-table-column prop="location_name" label="存放位置" min-width="130" />
       <el-table-column prop="related_unit" label="领用/来源单位" min-width="160" />
       <el-table-column prop="handler" label="经办人" width="100" />

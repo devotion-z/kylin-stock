@@ -69,6 +69,29 @@ export async function createLocation(name: string, remark = '') {
   )
 }
 
+export async function deleteLocation(id: number) {
+  const locationId = Number(id)
+  return withDatabaseMutation(async () => {
+    const db = await getDatabase()
+    const references = await db.select<{ count: number }[]>(`SELECT
+      (SELECT COUNT(*) FROM materials WHERE default_location_id=$1) +
+      (SELECT COUNT(*) FROM inventory_balances WHERE location_id=$1) +
+      (SELECT COUNT(*) FROM stock_transactions WHERE location_id=$1) AS count`, [locationId])
+    if (Number(references[0]?.count ?? 0) > 0) throw new Error('该存放位置已被物资或业务记录使用，不能删除')
+    return db.execute('DELETE FROM locations WHERE id=$1', [locationId])
+  })
+}
+
+export async function deleteUnit(id: number) {
+  const unitId = Number(id)
+  return withDatabaseMutation(async () => {
+    const db = await getDatabase()
+    const references = await db.select<{ count: number }[]>('SELECT COUNT(*) AS count FROM materials WHERE unit_id=$1', [unitId])
+    if (Number(references[0]?.count ?? 0) > 0) throw new Error('该计量单位已被物资使用，不能删除')
+    return db.execute('DELETE FROM units WHERE id=$1', [unitId])
+  })
+}
+
 export async function resolveLocationChoice(choice: MasterDataChoice, locations: Location[]) {
   return resolveMasterDataChoice(choice, locations, (name) => createLocation(name))
 }
@@ -121,13 +144,14 @@ export async function saveMaterial(input: {
       SELECT id, status
       FROM materials
       WHERE name = $1 COLLATE NOCASE
+        AND (($3 IS NULL AND default_location_id IS NULL) OR default_location_id = $3)
         AND ($2 IS NULL OR id <> $2)
-      LIMIT 1
-    `, [normalized.name, normalized.id ?? null])
+        LIMIT 1
+    `, [normalized.name, normalized.id ?? null, normalized.locationId])
     if (conflicts.length) {
       throw new Error(conflicts[0].status === 0
-        ? '已存在同名物资，但当前处于停用状态，请直接重新启用原物资'
-        : '已存在同名物资，请勿重复添加')
+        ? '同名同库位物资已停用，请直接重新启用原物资'
+        : '同名同库位物资已存在，请勿重复添加')
     }
 
     if (normalized.barcode) {

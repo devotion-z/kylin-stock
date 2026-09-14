@@ -3,10 +3,10 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { listLocations, listMaterials, type Location, type Material } from '../services/masterData'
-import { getTransactionIdByNo, stockInBatch, stockOutBatch } from '../services/inventory'
+import { getTransactionIdByNo, scanDocument, stockInBatch, stockOutBatch } from '../services/inventory'
 import { toLocalDateValue } from '../utils/date'
 import AttachmentField from '../components/AttachmentField.vue'
-import { addAttachment } from '../services/attachments'
+import { addAttachment, chooseAttachmentImages } from '../services/attachments'
 import { ensureBusinessOption, listBusinessOptions, type BusinessOption } from '../services/businessOptions'
 import { parseQuantityInput } from '../utils/quantity'
 
@@ -22,7 +22,7 @@ const scanCode = ref('')
 const scanInput = ref<{ focus: () => void }>()
 interface OperationLine { materialId?: number; locationId?: number; quantity: string }
 const lines = ref<OperationLine[]>([{ quantity: '1' }])
-const form = reactive({ occurredAt: toLocalDateValue(), relatedUnit: '', handler: '', receiver: '', remark: '' })
+const form = reactive({ occurredAt: toLocalDateValue(), adjustmentBasis: '', relatedUnit: '', handler: '', receiver: '', remark: '' })
 
 async function load() {
   loading.value = true
@@ -41,6 +41,12 @@ async function load() {
 function onMaterialChange(index: number, id: number) {
   const material = materials.value.find((item) => item.id === id)
   if (material?.default_location_id) lines.value[index].locationId = material.default_location_id
+}
+
+function materialLabel(item: Material) {
+  const location = item.default_location_id ? locations.value.find((entry) => entry.id === item.default_location_id)?.name : ''
+  const details = [item.unit_name, location].filter(Boolean).join(' · ')
+  return details ? `${item.name}（${details}）` : item.name
 }
 
 function addLine() { lines.value.push({ quantity: '1' }) }
@@ -62,9 +68,33 @@ function handleScan() {
   scanInput.value?.focus()
 }
 
+async function importScannedDocument() {
+  try {
+    const selected = await chooseAttachmentImages()
+    if (!selected.length) return
+    const text = await scanDocument(selected[0])
+    const detected: OperationLine[] = []
+    const textLines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+    for (const material of materials.value) {
+      const matched = textLines.find((line) => line.includes(material.name))
+      if (!matched) continue
+      const numbers = matched.match(/\d+(?:[.,]\d{1,2})?/g) ?? []
+      const quantity = numbers.length ? numbers[numbers.length - 1].replace(',', '.') : '1'
+      detected.push({ materialId: material.id, locationId: material.default_location_id ?? undefined, quantity })
+    }
+    pendingAttachments.value = [...new Set([...pendingAttachments.value, selected[0]])].slice(0, 10)
+    if (detected.length) {
+      lines.value = detected
+      ElMessage.success(`单据识别完成，匹配到 ${detected.length} 项物资，请核对数量后确认`)
+    } else {
+      ElMessage.warning('单据图片已添加，但未匹配到物资名称，请检查物资名称或手动补充明细')
+    }
+  } catch (e) { ElMessage.error(e instanceof Error ? e.message : String(e)) }
+}
+
 function reset() {
   if (submitting.value) return
-  Object.assign(form, { occurredAt: toLocalDateValue(), relatedUnit: '', handler: '', receiver: '', remark: '' })
+  Object.assign(form, { occurredAt: toLocalDateValue(), adjustmentBasis: '', relatedUnit: '', handler: '', receiver: '', remark: '' })
   lines.value = [{ quantity: '1' }]
   pendingAttachments.value = []
   scanCode.value = ''
@@ -90,7 +120,7 @@ async function submit() {
   try {
     const relatedUnit = await ensureBusinessOption('RELATED_UNIT', form.relatedUnit)
     const destination = isOut.value ? form.relatedUnit.trim() : ''
-    const payload = parsedLines.map((line) => ({ ...line, occurredAt: `${form.occurredAt}T00:00:00.000Z`, relatedUnit, destination, handler: form.handler, receiver: form.receiver, remark: form.remark }))
+    const payload = parsedLines.map((line) => ({ ...line, occurredAt: `${form.occurredAt}T00:00:00.000Z`, adjustmentBasis: form.adjustmentBasis, relatedUnit, destination, handler: form.handler, receiver: form.receiver, remark: form.remark }))
     const transactionNos = isOut.value ? await stockOutBatch(payload) : await stockInBatch(payload)
     let attachmentWarning = ''
     if (pendingAttachments.value.length) {
@@ -106,7 +136,7 @@ async function submit() {
     }
     if (attachmentWarning) ElMessage.warning(`登记已成功，但有单据图片未保存：${attachmentWarning}`)
     else ElMessage.success(isOut.value ? '出库登记成功' : '入库登记成功')
-    Object.assign(form, { occurredAt: toLocalDateValue(), relatedUnit: '', handler: '', receiver: '', remark: '' })
+    Object.assign(form, { occurredAt: toLocalDateValue(), adjustmentBasis: '', relatedUnit: '', handler: '', receiver: '', remark: '' })
     lines.value = [{ quantity: '1' }]
     pendingAttachments.value = []
     scanCode.value = ''
@@ -131,11 +161,12 @@ onMounted(load)
           <template #append><el-button :disabled="!scanCode.trim()" @click="handleScan">识别</el-button></template>
         </el-input>
       </el-form-item>
+      <el-form-item label="扫描单据"><el-button plain :disabled="submitting" @click="importScannedDocument">选择扫描单据并识别</el-button><span class="scan-hint">识别后会自动填充物资和数量，提交前请人工核对</span></el-form-item>
       <el-form-item :label="isOut ? '出库物资明细' : '入库物资明细'" required>
         <div class="line-list">
           <div v-for="(line, index) in lines" :key="index" class="operation-line">
             <el-select v-model="line.materialId" filterable placeholder="物资名称" class="line-material" @change="onMaterialChange(index, line.materialId!)">
-              <el-option v-for="item in materials" :key="item.id" :label="`${item.name}${item.unit_name ? `（${item.unit_name}）` : ''}`" :value="item.id" />
+              <el-option v-for="item in materials" :key="item.id" :label="materialLabel(item)" :value="item.id" />
             </el-select>
             <el-select v-model="line.locationId" filterable placeholder="存放位置" class="line-location">
               <el-option v-for="item in locations" :key="item.id" :label="item.name" :value="item.id" />
@@ -147,6 +178,7 @@ onMounted(load)
         </div>
       </el-form-item>
       <el-form-item label="业务日期" required><el-date-picker v-model="form.occurredAt" type="date" value-format="YYYY-MM-DD" format="YYYY年MM月DD日" :editable="false" placeholder="选择年月日" style="width:100%" /></el-form-item>
+      <el-form-item label="调拨依据"><el-input v-model="form.adjustmentBasis" clearable placeholder="例如：调拨单号、领料单号、采购单号" /></el-form-item>
       <el-form-item :label="isOut ? '领用单位' : '来源单位'">
         <el-select v-model="form.relatedUnit" clearable filterable allow-create default-first-option style="width:100%" placeholder="选择，或输入新单位后按回车">
           <el-option v-for="item in relatedUnitOptions" :key="item.id" :label="item.name" :value="item.name" />
@@ -168,5 +200,6 @@ onMounted(load)
 .line-material { flex: 1.5; min-width: 180px; }
 .line-location { flex: 1; min-width: 150px; }
 .line-quantity { width: 130px; }
+.scan-hint { margin-left: 10px; color: var(--el-text-color-secondary); font-size: 12px; }
 @media (max-width: 760px) { .operation-line { flex-wrap: wrap; } .line-material, .line-location { min-width: 45%; } }
 </style>

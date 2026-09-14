@@ -1,6 +1,6 @@
 use serde::Deserialize;
 use sqlx::{Connection, SqliteConnection};
-use std::{fs, path::PathBuf};
+use std::{fs, path::PathBuf, process::Command};
 use tauri::AppHandle;
 use uuid::Uuid;
 
@@ -18,6 +18,7 @@ pub struct StockOperationInput {
     handler: Option<String>,
     receiver: Option<String>,
     remark: Option<String>,
+    adjustment_basis: Option<String>,
 }
 
 fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -115,8 +116,8 @@ async fn stock_in_on_connection(
     let result: Result<(), String> = async {
         sqlx::query(
             r#"INSERT INTO stock_transactions
-              (transaction_no,type,material_id,location_id,quantity,occurred_at,related_unit,destination,handler,receiver,remark,created_at)
-              VALUES (?,'IN',?,?,?,?,?,NULL,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))"#,
+              (transaction_no,type,material_id,location_id,quantity,occurred_at,related_unit,destination,handler,receiver,remark,adjustment_basis,created_at)
+              VALUES (?,'IN',?,?,?,?,?,NULL,?,?,?, ?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))"#,
         )
         .bind(&transaction_no)
         .bind(input.material_id)
@@ -127,6 +128,7 @@ async fn stock_in_on_connection(
         .bind(clean(&input.handler))
         .bind(clean(&input.receiver))
         .bind(clean(&input.remark))
+        .bind(clean(&input.adjustment_basis))
         .execute(&mut *connection)
         .await
         .map_err(|e| e.to_string())?;
@@ -195,8 +197,8 @@ async fn stock_out_on_connection(
     let result: Result<(), String> = async {
         sqlx::query(
             r#"INSERT INTO stock_transactions
-              (transaction_no,type,material_id,location_id,quantity,occurred_at,related_unit,destination,handler,receiver,remark,created_at)
-              VALUES (?,'OUT',?,?,?,?,?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))"#,
+              (transaction_no,type,material_id,location_id,quantity,occurred_at,related_unit,destination,handler,receiver,remark,adjustment_basis,created_at)
+              VALUES (?,'OUT',?,?,?,?,?,?,?,?,?, ?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))"#,
         )
         .bind(&transaction_no)
         .bind(input.material_id)
@@ -208,6 +210,7 @@ async fn stock_out_on_connection(
         .bind(clean(&input.handler))
         .bind(clean(&input.receiver))
         .bind(clean(&input.remark))
+        .bind(clean(&input.adjustment_basis))
         .execute(&mut *connection)
         .await
         .map_err(|e| e.to_string())?;
@@ -261,11 +264,11 @@ async fn stock_in_batch_on_connection(
         for input in inputs {
             let number = transaction_no("IN");
             sqlx::query(r#"INSERT INTO stock_transactions
-              (transaction_no,type,material_id,location_id,quantity,occurred_at,related_unit,destination,handler,receiver,remark,created_at)
-              VALUES (?,'IN',?,?,?,?,?,NULL,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))"#)
+              (transaction_no,type,material_id,location_id,quantity,occurred_at,related_unit,destination,handler,receiver,remark,adjustment_basis,created_at)
+              VALUES (?,'IN',?,?,?,?,?,NULL,?,?,?, ?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))"#)
                 .bind(&number).bind(input.material_id).bind(input.location_id).bind(input.quantity)
                 .bind(input.occurred_at.trim()).bind(clean(&input.related_unit)).bind(clean(&input.handler))
-                .bind(clean(&input.receiver)).bind(clean(&input.remark)).execute(&mut *connection).await.map_err(|e| e.to_string())?;
+                .bind(clean(&input.receiver)).bind(clean(&input.remark)).bind(clean(&input.adjustment_basis)).execute(&mut *connection).await.map_err(|e| e.to_string())?;
             sqlx::query(r#"INSERT INTO inventory_balances(material_id,location_id,quantity,updated_at)
                VALUES (?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))
                ON CONFLICT(material_id,location_id) DO UPDATE SET quantity=quantity+excluded.quantity, updated_at=excluded.updated_at"#)
@@ -311,11 +314,11 @@ async fn stock_out_batch_on_connection(
             let number = transaction_no("OUT");
             let destination = clean(&input.destination).ok_or_else(|| "领用单位不能为空".to_string())?;
             sqlx::query(r#"INSERT INTO stock_transactions
-              (transaction_no,type,material_id,location_id,quantity,occurred_at,related_unit,destination,handler,receiver,remark,created_at)
-              VALUES (?,'OUT',?,?,?,?,?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))"#)
+              (transaction_no,type,material_id,location_id,quantity,occurred_at,related_unit,destination,handler,receiver,remark,adjustment_basis,created_at)
+              VALUES (?,'OUT',?,?,?,?,?,?,?,?,?, ?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))"#)
                 .bind(&number).bind(input.material_id).bind(input.location_id).bind(input.quantity)
                 .bind(input.occurred_at.trim()).bind(clean(&input.related_unit)).bind(&destination).bind(clean(&input.handler))
-                .bind(clean(&input.receiver)).bind(clean(&input.remark)).execute(&mut *connection).await.map_err(|e| e.to_string())?;
+                .bind(clean(&input.receiver)).bind(clean(&input.remark)).bind(clean(&input.adjustment_basis)).execute(&mut *connection).await.map_err(|e| e.to_string())?;
             let update = sqlx::query("UPDATE inventory_balances SET quantity=quantity-?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE material_id=? AND location_id=? AND quantity>=?")
                 .bind(input.quantity).bind(input.material_id).bind(input.location_id).bind(input.quantity).execute(&mut *connection).await.map_err(|e| e.to_string())?;
             if update.rows_affected() != 1 { return Err("库存余额发生变化，本批出库已取消，请重试".into()); }
@@ -365,6 +368,32 @@ pub async fn stock_out_batch(
     stock_out_batch_on_connection(&mut connection, &inputs).await
 }
 
+/// Run the optional system OCR engine against a scanned transfer document.
+/// Kylin deployments can install tesseract-ocr-chi-sim; the UI treats the
+/// returned text as a draft and always lets the operator verify quantities.
+#[tauri::command]
+pub async fn scan_document(source_path: String) -> Result<String, String> {
+    let path = source_path.trim();
+    if path.is_empty() {
+        return Err("请选择扫描单据图片".into());
+    }
+    let output = Command::new("tesseract")
+        .args([path, "stdout", "-l", "chi_sim+eng", "--psm", "6"])
+        .output()
+        .map_err(|_| {
+            "未检测到 OCR 引擎，请在麒麟系统安装 tesseract-ocr 和中文语言包".to_string()
+        })?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if detail.is_empty() {
+            "扫描单据识别失败，请检查图片清晰度".into()
+        } else {
+            format!("扫描单据识别失败：{detail}")
+        });
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,6 +434,7 @@ mod tests {
                 handler TEXT,
                 receiver TEXT,
                 remark TEXT,
+                adjustment_basis TEXT,
                 created_at TEXT NOT NULL
             )"#,
         )
@@ -426,6 +456,7 @@ mod tests {
             handler: Some("测试经办人".into()),
             receiver: None,
             remark: Some("自动化测试".into()),
+            adjustment_basis: None,
         }
     }
 

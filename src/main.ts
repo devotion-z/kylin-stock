@@ -8,12 +8,14 @@ import router from './router'
 import { initializeDatabase } from './services/database'
 
 async function bootstrap() {
-  await initializeDatabase()
-
-  createApp(App)
+  const app = createApp(App)
     .use(router)
     .use(ElementPlus, { locale: zhCn })
-    .mount('#app')
+  // Mount the shell immediately so the app never shows a blank white window
+  // while SQLite performs its first-run migration. Views await the same
+  // initialization promise through getDatabase().
+  app.mount('#app')
+  await initializeDatabase()
 }
 
 bootstrap().catch((error) => {

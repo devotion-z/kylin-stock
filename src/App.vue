@@ -37,7 +37,6 @@ const menu = [
         <img class="brand-mark" :src="appIcon" alt="物资管理系统图标" />
         <div>
           <strong>物资管理系统</strong>
-          <small>KylinStock</small>
         </div>
       </div>
 
@@ -65,7 +64,11 @@ const menu = [
       </el-header>
 
       <el-main class="content">
-        <router-view />
+        <router-view v-slot="{ Component }">
+          <keep-alive>
+            <component :is="Component" />
+          </keep-alive>
+        </router-view>
       </el-main>
     </el-container>
   </el-container>

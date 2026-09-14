@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { createLocation, createUnit, deleteMaterial, listLocations, listMaterials, listUnits, resolveLocationChoice, resolveUnitChoice, saveMaterial, setMaterialStatus, type Location, type MasterDataChoice, type Material, type Unit } from '../services/masterData'
+import { createLocation, createUnit, deleteLocation, deleteUnit, deleteMaterial, listLocations, listMaterials, listUnits, resolveLocationChoice, resolveUnitChoice, saveMaterial, setMaterialStatus, type Location, type MasterDataChoice, type Material, type Unit } from '../services/masterData'
 import { exportMaterialRows } from '../services/export'
 import AttachmentField from '../components/AttachmentField.vue'
 import { addAttachment, listAttachments, type Attachment } from '../services/attachments'
-import { ensureBusinessOption, type BusinessOptionKind } from '../services/businessOptions'
+import { deleteBusinessOption, ensureBusinessOption, listBusinessOptions, type BusinessOption, type BusinessOptionKind } from '../services/businessOptions'
 
 const loading = ref(false)
 const exporting = ref(false)
@@ -20,6 +20,9 @@ const dialogTitle = ref('新增物资')
 const attachments = ref<Attachment[]>([])
 const pendingAttachments = ref<string[]>([])
 const form = reactive({ id: undefined as number | undefined, name: '', barcode: '', unitId: undefined as MasterDataChoice, category: '', locationId: undefined as MasterDataChoice, remark: '' })
+const masterDialogVisible = ref(false)
+const masterTab = ref<'locations' | 'units' | 'related'>('locations')
+const relatedUnits = ref<BusinessOption[]>([])
 
 async function loadData(query: string) {
   ;[materials.value, units.value, locations.value] = await Promise.all([listMaterials(query), listUnits(), listLocations()])
@@ -163,6 +166,25 @@ async function quickBusinessOption(kind: BusinessOptionKind, title: string, hint
   } finally { mutating.value = false }
 }
 
+async function openMasterData() {
+  try {
+    ;[locations.value, units.value, relatedUnits.value] = await Promise.all([listLocations(), listUnits(), listBusinessOptions('RELATED_UNIT')])
+    masterDialogVisible.value = true
+  } catch (e) { ElMessage.error(e instanceof Error ? e.message : String(e)) }
+}
+
+async function removeMasterItem(item: Location | Unit | BusinessOption) {
+  try {
+    await ElMessageBox.confirm(`确认删除“${item.name}”？删除后不可恢复。`, '删除确认', { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' })
+    if (masterTab.value === 'locations') await deleteLocation(item.id)
+    else if (masterTab.value === 'units') await deleteUnit(item.id)
+    else await deleteBusinessOption(item.id)
+    await openMasterData()
+    await loadData(keyword.value)
+    ElMessage.success('已删除')
+  } catch (e) { if (e !== 'cancel' && e !== 'close') ElMessage.error(e instanceof Error ? e.message : String(e)) }
+}
+
 async function exportCurrent() {
   if (operationBusy.value) return
   if (!materials.value.length) return ElMessage.warning('当前没有可导出的物资数据')
@@ -196,6 +218,7 @@ onMounted(refresh)
         <el-button :disabled="operationBusy" @click="quickLocation">新增位置</el-button>
         <el-button :disabled="operationBusy" @click="quickBusinessOption('RELATED_UNIT', '新增领用单位', '请输入领用单位名称')">新增领用单位</el-button>
         <el-button :disabled="operationBusy" @click="quickBusinessOption('RELATED_UNIT', '新增来源单位', '请输入来源单位名称')">新增来源单位</el-button>
+        <el-button :disabled="operationBusy" @click="openMasterData">管理基础数据</el-button>
         <el-button type="primary" :disabled="operationBusy" @click="openCreate">新增物资</el-button>
       </div>
     </div>
@@ -234,6 +257,14 @@ onMounted(refresh)
       </el-form-item>
     </el-form>
     <template #footer><el-button :disabled="mutating" @click="dialogVisible=false">取消</el-button><el-button type="primary" :loading="mutating" :disabled="mutating" @click="submit">保存</el-button></template>
+  </el-dialog>
+
+  <el-dialog v-model="masterDialogVisible" title="基础数据管理" width="620px">
+    <el-tabs v-model="masterTab">
+      <el-tab-pane label="存放位置" name="locations"><el-table :data="locations" border max-height="360"><el-table-column prop="name" label="名称" /><el-table-column label="操作" width="100"><template #default="{ row }"><el-button link type="danger" @click="removeMasterItem(row)">删除</el-button></template></el-table-column></el-table></el-tab-pane>
+      <el-tab-pane label="计量单位" name="units"><el-table :data="units" border max-height="360"><el-table-column prop="name" label="名称" /><el-table-column label="操作" width="100"><template #default="{ row }"><el-button link type="danger" @click="removeMasterItem(row)">删除</el-button></template></el-table-column></el-table></el-tab-pane>
+      <el-tab-pane label="领用/来源单位" name="related"><el-table :data="relatedUnits" border max-height="360"><el-table-column prop="name" label="名称" /><el-table-column label="操作" width="100"><template #default="{ row }"><el-button link type="danger" @click="removeMasterItem(row)">删除</el-button></template></el-table-column></el-table></el-tab-pane>
+    </el-tabs>
   </el-dialog>
 </template>
 
