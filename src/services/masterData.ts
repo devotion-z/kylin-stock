@@ -77,7 +77,7 @@ export async function deleteLocation(id: number) {
       (SELECT COUNT(*) FROM materials WHERE default_location_id=$1) +
       (SELECT COUNT(*) FROM inventory_balances WHERE location_id=$1) +
       (SELECT COUNT(*) FROM stock_transactions WHERE location_id=$1) AS count`, [locationId])
-    if (Number(references[0]?.count ?? 0) > 0) throw new Error('该存放位置已被物资或业务记录使用，不能删除')
+    if (Number(references[0]?.count ?? 0) > 0) throw new Error('该存放位置已被物资或业务记录使用，不能删除；请先删除测试流水、修改物资默认库位，或保留该位置用于历史追溯')
     return db.execute('DELETE FROM locations WHERE id=$1', [locationId])
   })
 }

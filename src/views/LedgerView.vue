@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import dayjs from 'dayjs'
-import { ElMessage } from 'element-plus'
-import { listLedger, type LedgerRow } from '../services/inventory'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { deleteStockTransaction, listLedger, type LedgerRow } from '../services/inventory'
 import { listMaterials, type Material } from '../services/masterData'
 import { exportLedgerRows } from '../services/export'
 import { formatBusinessDate } from '../utils/date'
@@ -11,7 +11,8 @@ import { listAttachments, type Attachment } from '../services/attachments'
 
 const loading = ref(false)
 const exporting = ref(false)
-const operationBusy = computed(() => loading.value || exporting.value)
+const deletingId = ref<number | null>(null)
+const operationBusy = computed(() => loading.value || exporting.value || deletingId.value !== null)
 const rows = ref<LedgerRow[]>([])
 const dateRange = ref<string[]>([])
 const filters = reactive({ basis: '', material: '', type: 'ALL', relatedUnit: '' })
@@ -71,6 +72,26 @@ async function exportCurrent() {
     ElMessage.error(`导出失败：${e instanceof Error ? e.message : String(e)}`)
   } finally {
     exporting.value = false
+  }
+}
+
+async function removeRow(row: LedgerRow) {
+  if (operationBusy.value) return
+  try {
+    await ElMessageBox.confirm(`删除后会自动回滚库存，并删除该流水的单据图片。`, `确认删除流水“${row.transaction_no}”？`, {
+      type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消',
+    })
+  } catch { return }
+  deletingId.value = row.id
+  try {
+    await deleteStockTransaction(row.id)
+    ElMessage.success('流水已删除，库存已回滚')
+    deletingId.value = null
+    await refresh()
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : String(e))
+  } finally {
+    deletingId.value = null
   }
 }
 
@@ -138,6 +159,9 @@ onMounted(() => { refresh(); loadMaterialOptions() })
       <el-table-column prop="remark" label="备注" min-width="180" show-overflow-tooltip />
       <el-table-column label="单据图片" width="100">
         <template #default="{ row }"><el-button v-if="row.attachment_count" link type="primary" @click="showAttachments(row)">查看（{{ row.attachment_count }}）</el-button><span v-else>-</span></template>
+      </el-table-column>
+      <el-table-column label="操作" width="90" fixed="right">
+        <template #default="{ row }"><el-button link type="danger" :loading="deletingId === row.id" :disabled="operationBusy" @click="removeRow(row)">删除</el-button></template>
       </el-table-column>
     </el-table>
   </el-card>

@@ -368,6 +368,80 @@ pub async fn stock_out_batch(
     stock_out_batch_on_connection(&mut connection, &inputs).await
 }
 
+/// Delete one ledger entry and reverse the inventory effect in the same
+/// SQLite transaction. This is intended for removing mistaken/test entries;
+/// historical records are never silently detached from their stock balance.
+#[tauri::command]
+pub async fn delete_stock_transaction(app: AppHandle, id: i64) -> Result<(), String> {
+    if id <= 0 {
+        return Err("无效的流水记录".into());
+    }
+    let mut connection = open_connection(&app).await?;
+    begin_immediate(&mut connection).await?;
+    let result: Result<(), String> = async {
+        let record = sqlx::query_as::<_, (String, i64, i64, f64)>(
+            "SELECT type, material_id, location_id, CAST(quantity AS REAL) FROM stock_transactions WHERE id=?",
+        )
+        .bind(id)
+        .fetch_optional(&mut connection)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "找不到要删除的流水记录".to_string())?;
+
+        let (kind, material_id, location_id, quantity) = record;
+        if kind == "IN" {
+            let update = sqlx::query(
+                "UPDATE inventory_balances SET quantity=quantity-?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE material_id=? AND location_id=? AND quantity>=?",
+            )
+            .bind(quantity)
+            .bind(material_id)
+            .bind(location_id)
+            .bind(quantity)
+            .execute(&mut connection)
+            .await
+            .map_err(|e| e.to_string())?;
+            if update.rows_affected() != 1 {
+                return Err("删除入库记录会导致库存为负数，请先处理后续出库记录".into());
+            }
+        } else if kind == "OUT" {
+            sqlx::query(
+                "INSERT INTO inventory_balances(material_id,location_id,quantity,updated_at) VALUES (?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now')) ON CONFLICT(material_id,location_id) DO UPDATE SET quantity=quantity+excluded.quantity, updated_at=excluded.updated_at",
+            )
+            .bind(material_id)
+            .bind(location_id)
+            .bind(quantity)
+            .execute(&mut connection)
+            .await
+            .map_err(|e| e.to_string())?;
+        } else {
+            return Err("调整类流水暂不支持直接删除".into());
+        }
+
+        sqlx::query("DELETE FROM attachments WHERE entity_type='TRANSACTION' AND entity_id=?")
+            .bind(id)
+            .execute(&mut connection)
+            .await
+            .map_err(|e| e.to_string())?;
+        let deleted = sqlx::query("DELETE FROM stock_transactions WHERE id=?")
+            .bind(id)
+            .execute(&mut connection)
+            .await
+            .map_err(|e| e.to_string())?;
+        if deleted.rows_affected() != 1 {
+            return Err("流水记录删除失败，请重试".into());
+        }
+        Ok(())
+    }
+    .await;
+    match result {
+        Ok(()) => commit(&mut connection).await,
+        Err(error) => {
+            rollback(&mut connection).await;
+            Err(format!("删除流水失败：{error}"))
+        }
+    }
+}
+
 /// Run the optional system OCR engine against a scanned transfer document.
 /// Kylin deployments can install tesseract-ocr-chi-sim; the UI treats the
 /// returned text as a draft and always lets the operator verify quantities.

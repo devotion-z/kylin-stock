@@ -106,6 +106,11 @@ export async function stockOutBatch(inputs: StockOperationInput[]) {
   return withDatabaseMutation(() => invoke<string[]>('stock_out_batch', { inputs: payload }))
 }
 
+export function deleteStockTransaction(id: number) {
+  if (!Number.isInteger(id) || id <= 0) throw new Error('无效的流水记录')
+  return withDatabaseMutation(() => invoke<void>('delete_stock_transaction', { id }))
+}
+
 export function scanDocument(sourcePath: string) {
   return invoke<string>('scan_document', { sourcePath })
 }

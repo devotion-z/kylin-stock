@@ -260,6 +260,7 @@ onMounted(refresh)
   </el-dialog>
 
   <el-dialog v-model="masterDialogVisible" title="基础数据管理" width="620px">
+    <el-alert title="删除存放位置前，请先删除测试流水并将物资默认库位改到其他位置；历史业务使用过的位置会被保护。" type="info" :closable="false" show-icon style="margin-bottom:12px" />
     <el-tabs v-model="masterTab">
       <el-tab-pane label="存放位置" name="locations"><el-table :data="locations" border max-height="360"><el-table-column prop="name" label="名称" /><el-table-column label="操作" width="100"><template #default="{ row }"><el-button link type="danger" @click="removeMasterItem(row)">删除</el-button></template></el-table-column></el-table></el-tab-pane>
       <el-tab-pane label="计量单位" name="units"><el-table :data="units" border max-height="360"><el-table-column prop="name" label="名称" /><el-table-column label="操作" width="100"><template #default="{ row }"><el-button link type="danger" @click="removeMasterItem(row)">删除</el-button></template></el-table-column></el-table></el-tab-pane>

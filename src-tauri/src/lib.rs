@@ -21,6 +21,7 @@ pub fn run() {
             inventory::stock_out,
             inventory::stock_in_batch,
             inventory::stock_out_batch,
+            inventory::delete_stock_transaction,
             inventory::scan_document,
             migration::initialize_database_schema
         ])
