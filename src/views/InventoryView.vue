@@ -124,7 +124,7 @@ onMounted(async () => { await Promise.all([refresh(), listLocations().then(value
       <el-table-column prop="quantity" label="当前库存" width="140" />
       <el-table-column v-if="isDistribution" prop="location_name" label="存放位置" min-width="160" />
       <el-table-column label="最后更新时间" min-width="180"><template #default="{ row }">{{ formatDateTime(row.updated_at) }}</template></el-table-column>
-      <el-table-column label="管理" width="100" fixed="right">
+      <el-table-column v-if="isDistribution" label="管理" width="100" fixed="right">
         <template #default="{ row }">
           <el-dropdown :disabled="operationBusy" @command="handleManage($event, row)">
             <el-button link type="primary">管理<i class="el-icon--right">⌄</i></el-button>
