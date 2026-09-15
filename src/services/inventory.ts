@@ -40,12 +40,19 @@ export interface InventoryFilters {
 
 export interface LedgerFilters {
   basis?: string
-  material?: string
+  materialId?: number
   type?: string
   relatedUnit?: string
   destination?: string
   startAt?: string
   endAt?: string
+}
+
+export interface LedgerPage {
+  rows: LedgerRow[]
+  total: number
+  page: number
+  pageSize: number
 }
 
 export interface StockOperationInput {
@@ -210,37 +217,70 @@ export async function listInventory(filters: InventoryFilters | string = {}): Pr
   })
 }
 
-export async function listLedger(filters: LedgerFilters = {}): Promise<LedgerRow[]> {
-  const material = `%${(filters.material ?? '').trim()}%`
-  const basis = `%${(filters.basis ?? '').trim()}%`
-  const relatedUnit = `%${(filters.relatedUnit ?? '').trim()}%`
-  const destination = `%${(filters.destination ?? '').trim()}%`
+export function buildLedgerWhere(filters: LedgerFilters = {}) {
+  const clauses: string[] = []
+  const values: unknown[] = []
+  const add = (sql: string, value: unknown) => {
+    clauses.push(sql)
+    values.push(value)
+  }
 
+  if (Number(filters.materialId) > 0) add('t.material_id=?', Number(filters.materialId))
+  if (filters.basis?.trim()) add("COALESCE(t.adjustment_basis,'') LIKE ?", `%${filters.basis.trim()}%`)
+  if (filters.type && filters.type !== 'ALL') add('t.type=?', filters.type)
+  if (filters.relatedUnit?.trim()) add("COALESCE(t.related_unit,'') LIKE ?", `%${filters.relatedUnit.trim()}%`)
+  if (filters.destination?.trim()) add("COALESCE(t.destination,'') LIKE ?", `%${filters.destination.trim()}%`)
+  if (filters.startAt) add('t.occurred_at>=?', filters.startAt)
+  if (filters.endAt) add('t.occurred_at<=?', filters.endAt)
+
+  return { sql: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '', values }
+}
+
+const ledgerFromSql = `
+  FROM stock_transactions t
+  JOIN materials m ON m.id=t.material_id
+  LEFT JOIN units u ON u.id=m.unit_id
+  JOIN locations l ON l.id=t.location_id`
+
+const ledgerColumnsSql = `
+  SELECT t.id,t.transaction_no,t.type,t.material_id,m.name AS material_name,u.name AS unit_name,
+         t.location_id,l.name AS location_name,t.quantity,t.occurred_at,t.related_unit,t.destination,
+         t.handler,t.receiver,t.remark,t.adjustment_basis`
+
+export async function listLedgerPage(
+  filters: LedgerFilters = {},
+  page = 1,
+  pageSize = 50,
+  knownTotal?: number,
+): Promise<LedgerPage> {
+  const safePage = Math.max(1, Math.trunc(page) || 1)
+  const safePageSize = [50, 100, 200].includes(pageSize) ? pageSize : 50
+  const where = buildLedgerWhere(filters)
+  const offset = (safePage - 1) * safePageSize
+
+  return withDatabaseAccess(async () => {
+    const db = await getDatabase()
+    const rowQuery = `${ledgerColumnsSql},
+      (SELECT COUNT(*) FROM attachments a WHERE a.entity_type='TRANSACTION' AND a.entity_id=t.id) AS attachment_count
+      ${ledgerFromSql} ${where.sql}
+      ORDER BY t.occurred_at DESC,t.id DESC LIMIT ? OFFSET ?`
+    if (knownTotal !== undefined) {
+      const rows = await db.select<LedgerRow[]>(rowQuery, [...where.values, safePageSize, offset])
+      return { rows, total: knownTotal, page: safePage, pageSize: safePageSize }
+    }
+    const [rows, counts] = await Promise.all([
+      db.select<LedgerRow[]>(rowQuery, [...where.values, safePageSize, offset]),
+      db.select<{ total: number }[]>(`SELECT COUNT(*) AS total FROM stock_transactions t ${where.sql}`, where.values),
+    ])
+    return { rows, total: Number(counts[0]?.total ?? 0), page: safePage, pageSize: safePageSize }
+  })
+}
+
+export async function listLedger(filters: LedgerFilters = {}): Promise<LedgerRow[]> {
+  const where = buildLedgerWhere(filters)
   return withDatabaseAccess(async () =>
-    (await getDatabase()).select<LedgerRow[]>(`
-      SELECT t.id,t.transaction_no,t.type,t.material_id,m.name AS material_name,u.name AS unit_name,
-             t.location_id,l.name AS location_name,t.quantity,t.occurred_at,t.related_unit,t.destination,
-             t.handler,t.receiver,t.remark,t.adjustment_basis,
-             (SELECT COUNT(*) FROM attachments a WHERE a.entity_type='TRANSACTION' AND a.entity_id=t.id) AS attachment_count
-      FROM stock_transactions t
-      JOIN materials m ON m.id=t.material_id
-      LEFT JOIN units u ON u.id=m.unit_id
-      JOIN locations l ON l.id=t.location_id
-      WHERE ($1='%%' OR m.name LIKE $1)
-        AND ($2='%%' OR COALESCE(t.adjustment_basis,'') LIKE $2)
-        AND ($3='' OR t.type=$3)
-        AND ($4='%%' OR COALESCE(t.related_unit,'') LIKE $4)
-        AND ($5='%%' OR COALESCE(t.destination,'') LIKE $5)
-        AND ($6='' OR t.occurred_at >= $6)
-        AND ($7='' OR t.occurred_at <= $7)
-      ORDER BY t.occurred_at DESC,t.id DESC`, [
-        material,
-        basis,
-        filters.type === 'ALL' ? '' : filters.type ?? '',
-        relatedUnit,
-        destination,
-        filters.startAt ?? '',
-        filters.endAt ?? '',
-      ]),
+    (await getDatabase()).select<LedgerRow[]>(`${ledgerColumnsSql}, 0 AS attachment_count
+      ${ledgerFromSql} ${where.sql}
+      ORDER BY t.occurred_at DESC,t.id DESC`, where.values),
   )
 }

@@ -3,7 +3,7 @@ use std::{fs, path::PathBuf, str::FromStr, time::Duration};
 use tauri::AppHandle;
 
 const DATABASE_FILE: &str = "kylin-stock.db";
-pub(crate) const LATEST_SCHEMA_VERSION: i64 = 6;
+pub(crate) const LATEST_SCHEMA_VERSION: i64 = 7;
 
 struct Migration {
     version: i64,
@@ -147,6 +147,14 @@ const MIGRATIONS: &[Migration] = &[
         version: 6,
         statements: &["ALTER TABLE stock_transactions ADD COLUMN adjustment_basis TEXT"],
     },
+    Migration {
+        version: 7,
+        statements: &[
+            "CREATE INDEX IF NOT EXISTS idx_transactions_occurred_id ON stock_transactions(occurred_at DESC, id DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_transactions_material_occurred_id ON stock_transactions(material_id, occurred_at DESC, id DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_transactions_type_occurred_id ON stock_transactions(type, occurred_at DESC, id DESC)",
+        ],
+    },
 ];
 
 fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -261,6 +269,7 @@ pub async fn initialize_database_schema(app: AppHandle) -> Result<i64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::Row;
 
     async fn memory_database() -> SqliteConnection {
         SqliteConnection::connect("sqlite::memory:")
@@ -307,6 +316,21 @@ mod tests {
             assert_eq!(count, 1, "missing table {table}");
         }
 
+        for index in [
+            "idx_transactions_occurred_id",
+            "idx_transactions_material_occurred_id",
+            "idx_transactions_type_occurred_id",
+        ] {
+            let count = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?",
+            )
+            .bind(index)
+            .fetch_one(&mut connection)
+            .await
+            .expect("inspect index");
+            assert_eq!(count, 1, "missing index {index}");
+        }
+
         let units = sqlx::query_scalar::<_, String>("SELECT name FROM units ORDER BY id")
             .fetch_all(&mut connection)
             .await
@@ -314,6 +338,29 @@ mod tests {
         assert_eq!(
             units,
             ["发", "支", "具", "件", "套", "枚", "米", "公斤", "箱"]
+        );
+    }
+
+    #[tokio::test]
+    async fn ledger_page_query_uses_material_and_date_order_index() {
+        let mut connection = memory_database().await;
+        run_migrations_on_connection(&mut connection)
+            .await
+            .expect("create current schema");
+        let plan = sqlx::query(
+            "EXPLAIN QUERY PLAN SELECT id FROM stock_transactions WHERE material_id=1 ORDER BY occurred_at DESC,id DESC LIMIT 50",
+        )
+        .fetch_all(&mut connection)
+        .await
+        .expect("explain ledger page");
+        let detail = plan
+            .iter()
+            .map(|row| row.get::<String, _>("detail"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            detail.contains("idx_transactions_material_occurred_id"),
+            "{detail}"
         );
     }
 

@@ -3,6 +3,7 @@ import { getDatabase, withDatabaseAccess, withDatabaseMutation } from './databas
 
 export interface Unit { id: number; name: string; status: number }
 export interface Location { id: number; name: string; remark: string | null; status: number }
+export interface MaterialOption { id: number; name: string }
 export type MasterDataChoice = number | string | undefined
 interface NamedChoice { id: number; name: string }
 export interface Material {
@@ -105,6 +106,14 @@ export async function listMaterials(keyword = ''): Promise<Material[]> {
       WHERE ($1 = '%%' OR m.name LIKE $1 OR COALESCE(m.category, '') LIKE $1)
       ORDER BY m.status DESC, m.name
     `, [q]),
+  )
+}
+
+export async function listMaterialOptions(): Promise<MaterialOption[]> {
+  return withDatabaseAccess(async () =>
+    (await getDatabase()).select<MaterialOption[]>(
+      'SELECT id, name FROM materials WHERE status=1 ORDER BY name COLLATE NOCASE',
+    ),
   )
 }
 

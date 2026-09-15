@@ -2,8 +2,8 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import dayjs from 'dayjs'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { deleteStockTransaction, listLedger, updateStockTransaction, type LedgerRow } from '../services/inventory'
-import { listLocations, listMaterials, type Location, type Material } from '../services/masterData'
+import { deleteStockTransaction, listLedger, listLedgerPage, updateStockTransaction, type LedgerFilters, type LedgerRow } from '../services/inventory'
+import { listLocations, listMaterialOptions, type Location, type MaterialOption } from '../services/masterData'
 import { exportLedgerRows } from '../services/export'
 import { formatBusinessDate } from '../utils/date'
 import AttachmentField from '../components/AttachmentField.vue'
@@ -16,12 +16,16 @@ const deletingId = ref<number | null>(null)
 const editingId = ref<number | null>(null)
 const operationBusy = computed(() => loading.value || exporting.value || deletingId.value !== null || editingId.value !== null)
 const rows = ref<LedgerRow[]>([])
+const total = ref(0)
+const currentPage = ref(1)
+const pageSize = ref(50)
 const dateRange = ref<string[]>([])
-const filters = reactive({ basis: '', material: '', type: 'ALL', relatedUnit: '' })
+const filters = reactive({ basis: '', materialId: undefined as number | undefined, type: 'ALL', relatedUnit: '' })
+const appliedFilters = ref<LedgerFilters>({ type: 'ALL' })
 const attachmentDialogVisible = ref(false)
 const attachmentDialogTitle = ref('单据图片')
 const attachments = ref<Attachment[]>([])
-const materialOptions = ref<Material[]>([])
+const materialOptions = ref<MaterialOption[]>([])
 const locationOptions = ref<Location[]>([])
 const editDialogVisible = ref(false)
 const editRow = ref<LedgerRow | null>(null)
@@ -39,15 +43,31 @@ async function showAttachments(row: LedgerRow) {
   }
 }
 
-async function refresh() {
+function snapshotFilters(): LedgerFilters {
+  return {
+    ...filters,
+    startAt: dateRange.value[0] ? dayjs(dateRange.value[0]).startOf('day').toISOString() : '',
+    endAt: dateRange.value[1] ? dayjs(dateRange.value[1]).endOf('day').toISOString() : '',
+  }
+}
+
+async function refresh(recount = true) {
   if (operationBusy.value) return
   loading.value = true
   try {
-    rows.value = await listLedger({
-      ...filters,
-      startAt: dateRange.value[0] ? dayjs(dateRange.value[0]).startOf('day').toISOString() : '',
-      endAt: dateRange.value[1] ? dayjs(dateRange.value[1]).endOf('day').toISOString() : '',
-    })
+    let result = await listLedgerPage(
+      appliedFilters.value,
+      currentPage.value,
+      pageSize.value,
+      recount ? undefined : total.value,
+    )
+    const lastPage = Math.max(1, Math.ceil(result.total / pageSize.value))
+    if (currentPage.value > lastPage) {
+      currentPage.value = lastPage
+      result = await listLedgerPage(appliedFilters.value, currentPage.value, pageSize.value, result.total)
+    }
+    rows.value = result.rows
+    total.value = result.total
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : String(e))
   } finally {
@@ -57,7 +77,7 @@ async function refresh() {
 
 async function loadMaterialOptions() {
   try {
-    ;[materialOptions.value, locationOptions.value] = await Promise.all([listMaterials(), listLocations()])
+    ;[materialOptions.value, locationOptions.value] = await Promise.all([listMaterialOptions(), listLocations()])
   } catch (e) { ElMessage.error(`基础资料加载失败：${e instanceof Error ? e.message : String(e)}`) }
 }
 
@@ -119,15 +139,37 @@ async function submitEdit() {
     ElMessage.success('流水已修改，相关库存已同步更新')
     editDialogVisible.value = false
     editingId.value = null
-    await refresh()
+    await refresh(false)
   } catch (e) { ElMessage.error(e instanceof Error ? e.message : String(e)) }
   finally { editingId.value = null }
 }
 
 function reset() {
   if (operationBusy.value) return
-  Object.assign(filters, { basis: '', material: '', type: 'ALL', relatedUnit: '' })
+  Object.assign(filters, { basis: '', materialId: undefined, type: 'ALL', relatedUnit: '' })
   dateRange.value = []
+  appliedFilters.value = snapshotFilters()
+  currentPage.value = 1
+  refresh()
+}
+
+function query() {
+  if (operationBusy.value) return
+  appliedFilters.value = snapshotFilters()
+  currentPage.value = 1
+  refresh()
+}
+
+function changePage(page: number) {
+  if (operationBusy.value) return
+  currentPage.value = page
+  refresh(false)
+}
+
+function changePageSize(size: number) {
+  if (operationBusy.value) return
+  pageSize.value = size
+  currentPage.value = 1
   refresh()
 }
 
@@ -136,9 +178,10 @@ async function exportCurrent() {
   if (operationBusy.value) return
   if (!rows.value.length) return ElMessage.warning('当前没有可导出的查询结果')
 
-  const exportRows = rows.value.slice()
   exporting.value = true
   try {
+    const exportRows = await listLedger(appliedFilters.value)
+    if (!exportRows.length) return ElMessage.warning('当前没有可导出的查询结果')
     const path = await exportLedgerRows(exportRows)
     if (path) ElMessage.success(`当前查询结果已导出（${exportRows.length} 条）`)
   } catch (e) {
@@ -160,6 +203,7 @@ async function removeRow(row: LedgerRow) {
     await deleteStockTransaction(row.id)
     ElMessage.success('流水已删除，库存已回滚')
     deletingId.value = null
+    if (rows.value.length === 1 && currentPage.value > 1) currentPage.value -= 1
     await refresh()
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : String(e))
@@ -172,11 +216,11 @@ onMounted(() => { refresh(); loadMaterialOptions() })
 </script>
 
 <template>
-  <el-card shadow="never">
+  <el-card class="ledger-card" shadow="never">
     <div class="toolbar">
-      <el-input v-model="filters.basis" :disabled="operationBusy" clearable placeholder="调拨依据" style="width:180px" />
-      <el-select v-model="filters.material" :disabled="operationBusy" clearable filterable placeholder="物资名称" style="width:180px">
-        <el-option v-for="item in materialOptions" :key="item.id" :label="item.name" :value="item.name" />
+      <el-input v-model="filters.basis" :disabled="operationBusy" clearable placeholder="调拨依据" style="width:180px" @keyup.enter="query" />
+      <el-select v-model="filters.materialId" :disabled="operationBusy" clearable filterable placeholder="物资名称" style="width:180px">
+        <el-option v-for="item in materialOptions" :key="item.id" :label="item.name" :value="item.id" />
       </el-select>
       <el-date-picker
         v-model="dateRange"
@@ -189,29 +233,29 @@ onMounted(() => { refresh(); loadMaterialOptions() })
         format="YYYY年MM月DD日"
         style="width:260px"
       />
-      <el-input v-model="filters.relatedUnit" :disabled="operationBusy" clearable placeholder="单位" style="width:170px" />
+      <el-input v-model="filters.relatedUnit" :disabled="operationBusy" clearable placeholder="单位" style="width:170px" @keyup.enter="query" />
       <el-select v-model="filters.type" :disabled="operationBusy" placeholder="业务类型" style="width:130px">
         <el-option label="全部" value="ALL" />
         <el-option label="入库" value="IN" />
         <el-option label="出库" value="OUT" />
         <el-option label="调整" value="ADJUST" />
       </el-select>
-      <el-button type="primary" :loading="loading" :disabled="operationBusy" @click="refresh">查询</el-button>
+      <el-button type="primary" :loading="loading" :disabled="operationBusy" @click="query">查询</el-button>
       <el-button :disabled="operationBusy" @click="reset">重置</el-button>
       <el-button type="success" :loading="exporting" :disabled="operationBusy || !rows.length" @click="exportCurrent">
-        导出当前结果（{{ rows.length }}）
+        导出查询结果（{{ total }}）
       </el-button>
     </div>
 
     <el-alert
-      title="导出遵循“查询什么，就导出什么”：查询执行期间会暂时锁定筛选和导出，保证文件与当前表格结果一致。"
+      title="页面仅加载当前 50～200 条，几年数据也不会一次挤进表格；导出仍包含当前筛选条件下的全部记录。"
       type="info"
       :closable="false"
       show-icon
       style="margin-bottom:14px"
     />
 
-    <el-table v-loading="loading" :data="rows" border stripe empty-text="暂无出入库记录">
+    <el-table v-loading="loading" :data="rows" height="calc(100vh - 355px)" row-key="id" border stripe scrollbar-always-on empty-text="暂无出入库记录">
       <el-table-column prop="transaction_no" label="流水号" min-width="190" />
       <el-table-column prop="adjustment_basis" label="调拨依据" min-width="150" />
       <el-table-column label="类型" width="90">
@@ -240,6 +284,18 @@ onMounted(() => { refresh(); loadMaterialOptions() })
         </template>
       </el-table-column>
     </el-table>
+    <div class="pagination-bar">
+      <el-pagination
+        :current-page="currentPage"
+        :page-size="pageSize"
+        :page-sizes="[50, 100, 200]"
+        :total="total"
+        :disabled="operationBusy"
+        layout="total, sizes, prev, pager, next, jumper"
+        @current-change="changePage"
+        @size-change="changePageSize"
+      />
+    </div>
   </el-card>
 
   <el-dialog v-model="attachmentDialogVisible" :title="attachmentDialogTitle" width="620px">
@@ -266,4 +322,6 @@ onMounted(() => { refresh(); loadMaterialOptions() })
 
 <style scoped>
 .toolbar { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:18px; align-items:center; }
+.ledger-card { min-height: calc(100vh - 116px); }
+.pagination-bar { display:flex; justify-content:flex-end; padding-top:14px; }
 </style>
