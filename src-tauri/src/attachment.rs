@@ -2,7 +2,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use image::ImageOutputFormat;
 use serde::Serialize;
 use sqlx::Row;
-use std::{fs, io::Cursor, path::Path};
+use std::{fs, io::Cursor, path::Path, process::Command};
 use tauri::AppHandle;
 
 use crate::database::open_connection;
@@ -52,6 +52,17 @@ fn detect_image_mime(data: &[u8]) -> Option<&'static str> {
     }
 }
 
+fn mime_from_extension(path: &Path) -> Option<&'static str> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "jpg" | "jpeg" | "jfif" => Some("image/jpeg"),
+        "png" => Some("image/png"),
+        "webp" => Some("image/webp"),
+        "gif" => Some("image/gif"),
+        "bmp" => Some("image/bmp"),
+        _ => None,
+    }
+}
+
 fn normalize_image_for_preview(data: &[u8]) -> Result<(&'static str, Vec<u8>), String> {
     let image = image::load_from_memory(data)
         .map_err(|_| "图片内容已损坏或格式不兼容，请换一张图片后重试".to_string())?;
@@ -70,6 +81,16 @@ fn normalize_image_for_preview(data: &[u8]) -> Result<(&'static str, Vec<u8>), S
         .write_to(&mut output, output_format)
         .map_err(|e| format!("无法转换图片用于预览：{e}"))?;
     Ok((mime_type, output.into_inner()))
+}
+
+fn prepare_image_for_storage(
+    path: &Path,
+    source_data: Vec<u8>,
+) -> Result<(&'static str, Vec<u8>), String> {
+    let extension_mime = mime_from_extension(path)
+        .ok_or_else(|| "仅支持 JPG、PNG、WebP、GIF 或 BMP 图片".to_string())?;
+    let fallback_mime = detect_image_mime(&source_data).unwrap_or(extension_mime);
+    Ok(normalize_image_for_preview(&source_data).unwrap_or_else(|_| (fallback_mime, source_data)))
 }
 
 async fn entity_exists(
@@ -115,13 +136,10 @@ pub async fn add_attachment(
     }
 
     let source_data = fs::read(path).map_err(|e| format!("无法读取图片：{e}"))?;
-    detect_image_mime(&source_data)
-        .ok_or_else(|| "仅支持内容有效的 JPG、PNG、WebP、GIF 或 BMP 图片".to_string())?;
-    // Decode and re-encode once before persisting. This avoids WebKitGTK being
-    // unable to display phone/scanner images with uncommon JPEG marker or
-    // colour-profile layouts, while also rejecting files that merely use an
-    // image extension.
-    let (mime_type, data) = normalize_image_for_preview(&source_data)?;
+    // Decode and re-encode standard images for reliable WebKitGTK display.
+    // Scanner files with a supported suffix but non-standard bytes are still
+    // preserved and can be opened through the operating system image viewer.
+    let (mime_type, data) = prepare_image_for_storage(path, source_data)?;
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -228,6 +246,48 @@ pub async fn get_attachment_data(app: AppHandle, id: i64) -> Result<AttachmentDa
 }
 
 #[tauri::command]
+pub async fn open_attachment_external(app: AppHandle, id: i64) -> Result<(), String> {
+    let mut connection = open_connection(&app).await?;
+    let row = sqlx::query("SELECT file_name,data FROM attachments WHERE id=?")
+        .bind(id)
+        .fetch_optional(&mut connection)
+        .await
+        .map_err(|e| format!("读取单据图片失败：{e}"))?
+        .ok_or_else(|| "单据图片不存在".to_string())?;
+    let file_name: String = row.get("file_name");
+    let bytes: Vec<u8> = row.get("data");
+    let extension = Path::new(&file_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .filter(|value| {
+            value
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric())
+        })
+        .unwrap_or("jpg");
+    let cache_dir = app
+        .path_resolver()
+        .app_cache_dir()
+        .ok_or_else(|| "无法获取图片预览目录".to_string())?
+        .join("attachment-preview");
+    fs::create_dir_all(&cache_dir).map_err(|e| format!("无法创建图片预览目录：{e}"))?;
+    let preview_path = cache_dir.join(format!("单据图片-{id}.{extension}"));
+    fs::write(&preview_path, bytes).map_err(|e| format!("无法准备图片预览：{e}"))?;
+
+    #[cfg(target_os = "linux")]
+    let mut command = Command::new("xdg-open");
+    #[cfg(target_os = "macos")]
+    let mut command = Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut command = Command::new("explorer");
+    command
+        .arg(&preview_path)
+        .spawn()
+        .map_err(|e| format!("无法调用系统图片查看器：{e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn delete_attachment(app: AppHandle, id: i64) -> Result<(), String> {
     let mut connection = open_connection(&app).await?;
     let result = sqlx::query("DELETE FROM attachments WHERE id=?")
@@ -278,5 +338,27 @@ mod tests {
         assert_eq!(mime_type, "image/jpeg");
         assert_eq!(detect_image_mime(&normalized), Some("image/jpeg"));
         assert!(normalize_image_for_preview(b"not an image").is_err());
+    }
+
+    #[test]
+    fn accepts_supported_extensions_for_system_viewer_fallback() {
+        assert_eq!(
+            mime_from_extension(Path::new("调拨单据.JFIF")),
+            Some("image/jpeg")
+        );
+        assert_eq!(
+            mime_from_extension(Path::new("调拨单据.jpg")),
+            Some("image/jpeg")
+        );
+        assert_eq!(mime_from_extension(Path::new("说明.txt")), None);
+
+        let unusual_bytes = b"scanner-specific image payload".to_vec();
+        let (mime_type, stored) = prepare_image_for_storage(
+            Path::new("2026-09-14-11-24-15_001.jpg"),
+            unusual_bytes.clone(),
+        )
+        .expect("accept non-standard scanner JPG");
+        assert_eq!(mime_type, "image/jpeg");
+        assert_eq!(stored, unusual_bytes);
     }
 }

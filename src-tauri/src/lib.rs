@@ -23,6 +23,7 @@ pub fn run() {
             attachment::delete_attachment,
             attachment::get_attachment_data,
             attachment::list_attachments,
+            attachment::open_attachment_external,
             backup::create_database_backup,
             backup::restore_database_backup,
             database::database_execute,

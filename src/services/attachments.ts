@@ -51,6 +51,10 @@ export async function getAttachmentDataUrl(id: number) {
   return `data:${result.mimeType};base64,${result.data}`
 }
 
+export function openAttachmentExternal(id: number) {
+  return withDatabaseAccess(() => invoke<void>('open_attachment_external', { id }))
+}
+
 export function fileNameFromPath(path: string) {
   return path.split(/[\\/]/).pop() || path
 }

@@ -104,7 +104,7 @@ jobs:
         run: cargo metadata --locked --manifest-path src-tauri/Cargo.toml --no-deps > /dev/null
 
       - name: Build native ARM64 deb smoke package
-        run: npm run tauri:build -- --bundles deb
+        run: ./scripts/build-deb.sh
 
       - name: Verify Debian package metadata
         shell: bash
@@ -124,7 +124,7 @@ jobs:
             "$PACKAGE" "$VERSION" "$ARCH" "$DEPENDS"
 
           test "$PACKAGE" = "kylin-stock"
-          test "$VERSION" = "0.1.6"
+          test "$VERSION" = "0.1.7"
           test "$ARCH" = "arm64"
           printf '%s\n' "$DEPENDS" | grep -F 'libwebkit2gtk-4.0-37'
           if printf '%s\n' "$DEPENDS" | grep -F 'libwebkit2gtk-4.1-0'; then
@@ -137,6 +137,7 @@ jobs:
         run: |
           set -euo pipefail
           DEB="$(find src-tauri/target/release/bundle/deb -maxdepth 1 -type f -name '*.deb' -print -quit)"
+          install -d /home/icon-smoke/Desktop
           dpkg -i "$DEB"
 
           STATUS="$(dpkg-query -W -f='${db:Status-Status}' kylin-stock)"
@@ -145,6 +146,11 @@ jobs:
           printf 'Installed status=%s version=%s arch=%s\n' "$STATUS" "$VERSION" "$ARCH"
           test "$STATUS" = "installed"
           test "$ARCH" = "arm64"
+          SHORTCUT="/home/icon-smoke/Desktop/物资管理系统.desktop"
+          test -x "$SHORTCUT"
+          grep -Fx 'Name=物资管理系统' "$SHORTCUT"
+          SHORTCUT_ICON="$(sed -n 's/^Icon=//p' "$SHORTCUT" | head -n 1)"
+          test -f "$SHORTCUT_ICON"
 
       - name: Verify installed executable and desktop entry
         shell: bash

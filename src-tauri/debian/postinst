@@ -1,0 +1,36 @@
+#!/bin/sh
+set -e
+
+desktop_entry="$(find /usr/share/applications -maxdepth 1 -type f -iname '*kylin*stock*.desktop' -print -quit 2>/dev/null || true)"
+shortcut_name="物资管理系统.desktop"
+icon_file="/usr/share/icons/hicolor/128x128/apps/kylin-stock.png"
+if [ ! -f "$icon_file" ]; then
+  icon_file="$(find /usr/share/icons/hicolor /usr/share/pixmaps -type f -iname '*kylin*stock*.png' -print -quit 2>/dev/null || true)"
+fi
+
+if [ -n "$desktop_entry" ] && [ -f "$desktop_entry" ]; then
+  for user_home in /home/*; do
+    [ -d "$user_home" ] || continue
+    owner="$(stat -c '%u:%g' "$user_home" 2>/dev/null || true)"
+    for desktop_dir in "$user_home/桌面" "$user_home/Desktop"; do
+      [ -d "$desktop_dir" ] || continue
+      shortcut="$desktop_dir/$shortcut_name"
+      install -m 0755 "$desktop_entry" "$shortcut"
+      if [ -n "$icon_file" ] && [ -f "$icon_file" ]; then
+        sed -i "s|^Icon=.*|Icon=$icon_file|" "$shortcut"
+      fi
+      if [ -n "$owner" ]; then
+        chown "$owner" "$shortcut"
+      fi
+    done
+  done
+fi
+
+if command -v update-desktop-database >/dev/null 2>&1; then
+  update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  gtk-update-icon-cache -f -t /usr/share/icons/hicolor >/dev/null 2>&1 || true
+fi
+
+exit 0

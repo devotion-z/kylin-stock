@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { chooseAttachmentImages, deleteAttachment, fileNameFromPath, getAttachmentDataUrl, type Attachment } from '../services/attachments'
+import { chooseAttachmentImages, deleteAttachment, fileNameFromPath, getAttachmentDataUrl, openAttachmentExternal, type Attachment } from '../services/attachments'
 
 const props = withDefaults(defineProps<{
   attachments: Attachment[]
@@ -43,9 +43,14 @@ async function preview(item: Attachment) {
   previewVisible.value = true
   try {
     previewUrl.value = await getAttachmentDataUrl(item.id)
-  } catch (e) {
+  } catch {
     previewVisible.value = false
-    ElMessage.error(e instanceof Error ? e.message : String(e))
+    try {
+      await openAttachmentExternal(item.id)
+      ElMessage.info('该图片格式无法内嵌显示，已使用系统图片查看器打开')
+    } catch (openError) {
+      ElMessage.error(openError instanceof Error ? openError.message : String(openError))
+    }
   } finally {
     previewLoading.value = false
   }
