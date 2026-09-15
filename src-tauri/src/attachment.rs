@@ -1,7 +1,8 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use image::ImageOutputFormat;
 use serde::Serialize;
 use sqlx::Row;
-use std::{fs, path::Path};
+use std::{fs, io::Cursor, path::Path};
 use tauri::AppHandle;
 
 use crate::database::open_connection;
@@ -51,15 +52,24 @@ fn detect_image_mime(data: &[u8]) -> Option<&'static str> {
     }
 }
 
-fn mime_from_extension(path: &Path) -> Option<&'static str> {
-    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
-        "jpg" | "jpeg" | "jfif" => Some("image/jpeg"),
-        "png" => Some("image/png"),
-        "webp" => Some("image/webp"),
-        "gif" => Some("image/gif"),
-        "bmp" => Some("image/bmp"),
-        _ => None,
-    }
+fn normalize_image_for_preview(data: &[u8]) -> Result<(&'static str, Vec<u8>), String> {
+    let image = image::load_from_memory(data)
+        .map_err(|_| "图片内容已损坏或格式不兼容，请换一张图片后重试".to_string())?;
+    let output_format = if image.color().has_alpha() {
+        ImageOutputFormat::Png
+    } else {
+        ImageOutputFormat::Jpeg(90)
+    };
+    let mime_type = if image.color().has_alpha() {
+        "image/png"
+    } else {
+        "image/jpeg"
+    };
+    let mut output = Cursor::new(Vec::new());
+    image
+        .write_to(&mut output, output_format)
+        .map_err(|e| format!("无法转换图片用于预览：{e}"))?;
+    Ok((mime_type, output.into_inner()))
 }
 
 async fn entity_exists(
@@ -104,14 +114,14 @@ pub async fn add_attachment(
         return Err("单张图片不能超过 15 MB".into());
     }
 
-    let data = fs::read(path).map_err(|e| format!("无法读取图片：{e}"))?;
-    // A few Kylin/phone image exporters write non-standard JPEG marker
-    // layouts even though the OS image viewer opens the file correctly. Keep
-    // signature detection as the first choice and use a supported extension as
-    // a compatibility fallback instead of dropping the receipt after booking.
-    let mime_type = detect_image_mime(&data)
-        .or_else(|| mime_from_extension(path))
-        .ok_or_else(|| "仅支持 JPG、PNG、WebP、GIF 或 BMP 图片".to_string())?;
+    let source_data = fs::read(path).map_err(|e| format!("无法读取图片：{e}"))?;
+    detect_image_mime(&source_data)
+        .ok_or_else(|| "仅支持内容有效的 JPG、PNG、WebP、GIF 或 BMP 图片".to_string())?;
+    // Decode and re-encode once before persisting. This avoids WebKitGTK being
+    // unable to display phone/scanner images with uncommon JPEG marker or
+    // colour-profile layouts, while also rejecting files that merely use an
+    // image extension.
+    let (mime_type, data) = normalize_image_for_preview(&source_data)?;
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -142,7 +152,7 @@ pub async fn add_attachment(
     .bind(entity_id)
     .bind(file_name)
     .bind(mime_type)
-    .bind(metadata.len() as i64)
+    .bind(data.len() as i64)
     .bind(data)
     .execute(&mut connection)
     .await
@@ -200,16 +210,20 @@ pub async fn list_attachments(
 #[tauri::command]
 pub async fn get_attachment_data(app: AppHandle, id: i64) -> Result<AttachmentData, String> {
     let mut connection = open_connection(&app).await?;
-    let row = sqlx::query("SELECT mime_type,data FROM attachments WHERE id=?")
+    let row = sqlx::query("SELECT data FROM attachments WHERE id=?")
         .bind(id)
         .fetch_optional(&mut connection)
         .await
         .map_err(|e| format!("读取单据图片失败：{e}"))?
         .ok_or_else(|| "单据图片不存在".to_string())?;
     let bytes: Vec<u8> = row.get("data");
+    // Older releases stored the original bytes, so normalize on read as well.
+    // This repairs previews for already-imported compatible images without
+    // asking the user to re-enter the stock transaction.
+    let (mime_type, preview_bytes) = normalize_image_for_preview(&bytes)?;
     Ok(AttachmentData {
-        mime_type: row.get("mime_type"),
-        data: STANDARD.encode(bytes),
+        mime_type: mime_type.to_string(),
+        data: STANDARD.encode(preview_bytes),
     })
 }
 
@@ -252,15 +266,17 @@ mod tests {
     }
 
     #[test]
-    fn accepts_common_image_extensions_as_kylin_compatibility_fallback() {
-        assert_eq!(
-            mime_from_extension(Path::new("现场照片.JFIF")),
-            Some("image/jpeg")
-        );
-        assert_eq!(
-            mime_from_extension(Path::new("单据.jpg")),
-            Some("image/jpeg")
-        );
-        assert_eq!(mime_from_extension(Path::new("说明.txt")), None);
+    fn normalizes_supported_images_and_rejects_broken_data() {
+        let source = image::DynamicImage::new_rgb8(2, 2);
+        let mut encoded = Cursor::new(Vec::new());
+        source
+            .write_to(&mut encoded, ImageOutputFormat::Png)
+            .expect("encode fixture");
+
+        let (mime_type, normalized) =
+            normalize_image_for_preview(&encoded.into_inner()).expect("normalize image");
+        assert_eq!(mime_type, "image/jpeg");
+        assert_eq!(detect_image_mime(&normalized), Some("image/jpeg"));
+        assert!(normalize_image_for_preview(b"not an image").is_err());
     }
 }

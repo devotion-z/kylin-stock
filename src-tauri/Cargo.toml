@@ -1,6 +1,6 @@
 [package]
 name = "kylin-stock"
-version = "0.1.5"
+version = "0.1.6"
 description = "KylinStock material inventory management desktop application"
 authors = ["devotionn"]
 edition = "2021"
@@ -23,6 +23,7 @@ sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 fs2 = "0.4"
+image = { version = "0.24.9", default-features = false, features = ["jpeg", "png", "gif", "bmp", "webp"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

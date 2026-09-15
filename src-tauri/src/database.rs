@@ -9,11 +9,19 @@ use tauri::AppHandle;
 
 const DATABASE_FILE: &str = "kylin-stock.db";
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecuteResult {
     rows_affected: u64,
     last_insert_id: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteLocationResult {
+    rows_affected: u64,
+    cleared_material_defaults: u64,
+    removed_zero_balances: u64,
 }
 
 fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -135,6 +143,86 @@ pub async fn database_execute(
     })
 }
 
+async fn delete_location_from_connection(
+    connection: &mut SqliteConnection,
+    location_id: i64,
+) -> Result<DeleteLocationResult, String> {
+    let mut transaction = connection
+        .begin()
+        .await
+        .map_err(|e| format!("无法开始删除存放位置：{e}"))?;
+
+    let exists = sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM locations WHERE id=?)")
+        .bind(location_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|e| format!("无法检查存放位置：{e}"))?;
+    if !exists {
+        return Err("存放位置不存在或已删除".into());
+    }
+
+    let transaction_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM stock_transactions WHERE location_id=?")
+            .bind(location_id)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(|e| format!("无法检查历史业务记录：{e}"))?;
+    let nonzero_balance_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM inventory_balances WHERE location_id=? AND ABS(quantity) > 0.0000001",
+    )
+    .bind(location_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|e| format!("无法检查库位库存：{e}"))?;
+    if transaction_count > 0 || nonzero_balance_count > 0 {
+        return Err(
+            "该存放位置仍有出入库流水或非零库存，不能删除；请先在出入库明细中处理相关记录".into(),
+        );
+    }
+
+    // A deleted test ledger can leave harmless zero-balance rows behind, and a
+    // material may still point at the location as its optional default. Clear
+    // both atomically so they do not permanently prevent master-data cleanup.
+    let cleared_defaults = sqlx::query(
+        "UPDATE materials SET default_location_id=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE default_location_id=?",
+    )
+    .bind(location_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|e| format!("无法清理物资默认库位：{e}"))?;
+    let removed_balances = sqlx::query(
+        "DELETE FROM inventory_balances WHERE location_id=? AND ABS(quantity) <= 0.0000001",
+    )
+    .bind(location_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|e| format!("无法清理零库存记录：{e}"))?;
+    let deleted = sqlx::query("DELETE FROM locations WHERE id=?")
+        .bind(location_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|e| format!("删除存放位置失败：{e}"))?;
+
+    transaction
+        .commit()
+        .await
+        .map_err(|e| format!("提交存放位置删除失败：{e}"))?;
+    Ok(DeleteLocationResult {
+        rows_affected: deleted.rows_affected(),
+        cleared_material_defaults: cleared_defaults.rows_affected(),
+        removed_zero_balances: removed_balances.rows_affected(),
+    })
+}
+
+#[tauri::command]
+pub async fn delete_location(app: AppHandle, id: i64) -> Result<DeleteLocationResult, String> {
+    if id <= 0 {
+        return Err("存放位置无效".into());
+    }
+    let mut connection = open_connection(&app).await?;
+    delete_location_from_connection(&mut connection, id).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,5 +268,73 @@ mod tests {
             .expect("select inserted row");
         assert_eq!(row.try_get::<String, _>("name").unwrap(), "电缆");
         assert_eq!(row.try_get::<f64, _>("quantity").unwrap(), 2.5);
+    }
+
+    #[tokio::test]
+    async fn deletes_location_after_cleaning_default_and_zero_balance_references() {
+        let mut connection = SqliteConnection::connect("sqlite::memory:")
+            .await
+            .expect("open database");
+        for statement in [
+            "PRAGMA foreign_keys=ON",
+            "CREATE TABLE locations(id INTEGER PRIMARY KEY)",
+            "CREATE TABLE materials(id INTEGER PRIMARY KEY, default_location_id INTEGER REFERENCES locations(id), updated_at TEXT)",
+            "CREATE TABLE inventory_balances(id INTEGER PRIMARY KEY, location_id INTEGER REFERENCES locations(id), quantity REAL)",
+            "CREATE TABLE stock_transactions(id INTEGER PRIMARY KEY, location_id INTEGER REFERENCES locations(id))",
+            "INSERT INTO locations(id) VALUES (7)",
+            "INSERT INTO materials(id,default_location_id) VALUES (1,7)",
+            "INSERT INTO inventory_balances(id,location_id,quantity) VALUES (1,7,0)",
+        ] {
+            sqlx::query(statement)
+                .execute(&mut connection)
+                .await
+                .expect("prepare fixture");
+        }
+
+        let result = delete_location_from_connection(&mut connection, 7)
+            .await
+            .expect("delete location");
+        assert_eq!(result.rows_affected, 1);
+        assert_eq!(result.cleared_material_defaults, 1);
+        assert_eq!(result.removed_zero_balances, 1);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM locations")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn keeps_location_when_real_business_history_exists() {
+        let mut connection = SqliteConnection::connect("sqlite::memory:")
+            .await
+            .expect("open database");
+        for statement in [
+            "CREATE TABLE locations(id INTEGER PRIMARY KEY)",
+            "CREATE TABLE materials(id INTEGER PRIMARY KEY, default_location_id INTEGER, updated_at TEXT)",
+            "CREATE TABLE inventory_balances(id INTEGER PRIMARY KEY, location_id INTEGER, quantity REAL)",
+            "CREATE TABLE stock_transactions(id INTEGER PRIMARY KEY, location_id INTEGER)",
+            "INSERT INTO locations(id) VALUES (9)",
+            "INSERT INTO stock_transactions(id,location_id) VALUES (1,9)",
+        ] {
+            sqlx::query(statement)
+                .execute(&mut connection)
+                .await
+                .expect("prepare fixture");
+        }
+
+        let error = delete_location_from_connection(&mut connection, 9)
+            .await
+            .expect_err("business history must prevent deletion");
+        assert!(error.contains("出入库流水"));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM locations WHERE id=9")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap(),
+            1
+        );
     }
 }

@@ -5,7 +5,7 @@ import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import 'element-plus/dist/index.css'
 import './styles/global.css'
 import App from './App.vue'
-import router from './router'
+import router, { preloadRouteViews } from './router'
 import { initializeDatabase } from './services/database'
 
 async function bootstrap() {
@@ -24,6 +24,10 @@ async function bootstrap() {
   const startup = document.getElementById('startup-screen')
   startup?.classList.add('startup-done')
   window.setTimeout(() => startup?.remove(), 320)
+  // Warm the small route chunks once the first screen is usable. Exporting
+  // Excel is loaded separately only when requested, so module switches no
+  // longer wait for the large spreadsheet library.
+  window.setTimeout(() => { void preloadRouteViews() }, 0)
 }
 
 bootstrap().catch((error) => {

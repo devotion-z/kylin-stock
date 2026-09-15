@@ -7,6 +7,17 @@ const InventoryView = () => import('../views/InventoryView.vue')
 const LedgerView = () => import('../views/LedgerView.vue')
 const BackupView = () => import('../views/BackupView.vue')
 
+export function preloadRouteViews() {
+  return Promise.allSettled([
+    DashboardView(),
+    MaterialsView(),
+    StockOperationView(),
+    InventoryView(),
+    LedgerView(),
+    BackupView(),
+  ])
+}
+
 const routes = [
   { path: '/', component: DashboardView, meta: { title: '库存总览', subtitle: '查看当前库存与近期业务情况' } },
   { path: '/materials', component: MaterialsView, meta: { title: '物资管理', subtitle: '维护物资名称、单位和存放位置' } },

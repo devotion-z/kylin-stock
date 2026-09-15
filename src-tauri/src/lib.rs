@@ -26,6 +26,7 @@ pub fn run() {
             backup::create_database_backup,
             backup::restore_database_backup,
             database::database_execute,
+            database::delete_location,
             database::database_select,
             inventory::stock_in,
             inventory::stock_out,

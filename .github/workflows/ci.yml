@@ -124,7 +124,7 @@ jobs:
             "$PACKAGE" "$VERSION" "$ARCH" "$DEPENDS"
 
           test "$PACKAGE" = "kylin-stock"
-          test "$VERSION" = "0.1.5"
+          test "$VERSION" = "0.1.6"
           test "$ARCH" = "arm64"
           printf '%s\n' "$DEPENDS" | grep -F 'libwebkit2gtk-4.0-37'
           if printf '%s\n' "$DEPENDS" | grep -F 'libwebkit2gtk-4.1-0'; then
@@ -165,6 +165,19 @@ jobs:
           cat "$DESKTOP"
           grep -Fx 'Name=物资管理系统' "$DESKTOP"
           grep -Eq '^Exec=.*kylin-stock' "$DESKTOP"
+          ICON_VALUE="$(sed -n 's/^Icon=//p' "$DESKTOP" | head -n 1)"
+          test -n "$ICON_VALUE"
+          if [[ "$ICON_VALUE" = /* ]]; then
+            test -f "$ICON_VALUE"
+            ICON_FILE="$ICON_VALUE"
+          else
+            ICON_FILE="$(find /usr/share/icons /usr/share/pixmaps -type f \
+              \( -name "$ICON_VALUE.png" -o -name "$ICON_VALUE.svg" -o -name "$ICON_VALUE.xpm" \) \
+              -print -quit 2>/dev/null)"
+            test -n "$ICON_FILE"
+          fi
+          printf 'Desktop icon: %s\n' "$ICON_FILE"
+          file "$ICON_FILE"
 
       - name: Smoke launch installed application
         shell: bash

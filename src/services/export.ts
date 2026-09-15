@@ -1,6 +1,6 @@
 import { save } from '@tauri-apps/api/dialog'
 import { writeBinaryFile } from '@tauri-apps/api/fs'
-import * as XLSX from 'xlsx'
+import type { WorkBook, WorkSheet } from 'xlsx'
 import type { InventoryRow, LedgerRow } from './inventory'
 import type { Material } from './masterData'
 import { formatBusinessDate, formatDateTime } from '../utils/date'
@@ -15,7 +15,9 @@ function safeDateStamp() {
   return `${y}-${m}-${day}_${hh}${mm}`
 }
 
-async function saveWorkbook(workbook: XLSX.WorkBook, defaultName: string) {
+type XlsxModule = typeof import('xlsx')
+
+async function saveWorkbook(workbook: WorkBook, defaultName: string, xlsx: XlsxModule) {
   const path = await save({
     title: '导出表格',
     defaultPath: defaultName,
@@ -23,7 +25,7 @@ async function saveWorkbook(workbook: XLSX.WorkBook, defaultName: string) {
   })
   if (!path) return null
 
-  const output = XLSX.write(workbook, {
+  const output = xlsx.write(workbook, {
     type: 'array',
     bookType: 'xlsx',
     compression: true,
@@ -32,11 +34,12 @@ async function saveWorkbook(workbook: XLSX.WorkBook, defaultName: string) {
   return path
 }
 
-function setColumnWidths(sheet: XLSX.WorkSheet, widths: number[]) {
+function setColumnWidths(sheet: WorkSheet, widths: number[]) {
   sheet['!cols'] = widths.map((wch) => ({ wch }))
 }
 
 export async function exportMaterialRows(rows: Material[]) {
+  const XLSX = await import('xlsx')
   const data = [
     ['物资名称', '条码', '计量单位', '分类', '存放位置', '备注', '状态'],
     ...rows.map((row) => [
@@ -53,10 +56,11 @@ export async function exportMaterialRows(rows: Material[]) {
   setColumnWidths(sheet, [22, 18, 12, 16, 20, 28, 10])
   const book = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(book, sheet, '物资明细')
-  return saveWorkbook(book, `物资明细_${safeDateStamp()}.xlsx`)
+  return saveWorkbook(book, `物资明细_${safeDateStamp()}.xlsx`, XLSX)
 }
 
 export async function exportLedgerRows(rows: LedgerRow[]) {
+  const XLSX = await import('xlsx')
   const data = [
     ['流水号', '调拨依据', '业务类型', '物资名称', '计量单位', '数量', '存放位置', '领用/来源单位', '经办人', '领用人', '业务日期', '备注'],
     ...rows.map((row) => [
@@ -78,10 +82,11 @@ export async function exportLedgerRows(rows: LedgerRow[]) {
   setColumnWidths(sheet, [24, 18, 10, 20, 12, 12, 18, 20, 12, 12, 20, 24])
   const book = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(book, sheet, '出入库明细')
-  return saveWorkbook(book, `出入库明细_${safeDateStamp()}.xlsx`)
+  return saveWorkbook(book, `出入库明细_${safeDateStamp()}.xlsx`, XLSX)
 }
 
 export async function exportInventoryRows(rows: InventoryRow[], includeLocation = true) {
+  const XLSX = await import('xlsx')
   const data = includeLocation
     ? [
         ['物资名称', '单位', '当前库存', '存放位置', '最后更新时间'],
@@ -95,5 +100,5 @@ export async function exportInventoryRows(rows: InventoryRow[], includeLocation 
   setColumnWidths(sheet, includeLocation ? [22, 10, 14, 20, 20] : [22, 10, 14, 20])
   const book = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(book, sheet, includeLocation ? '库存物资分布' : '当前库存')
-  return saveWorkbook(book, `${includeLocation ? '库存物资分布' : '当前库存'}_${safeDateStamp()}.xlsx`)
+  return saveWorkbook(book, `${includeLocation ? '库存物资分布' : '当前库存'}_${safeDateStamp()}.xlsx`, XLSX)
 }

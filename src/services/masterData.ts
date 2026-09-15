@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api/tauri'
 import { getDatabase, withDatabaseAccess, withDatabaseMutation } from './database'
 
 export interface Unit { id: number; name: string; status: number }
@@ -73,15 +74,7 @@ export async function createLocation(name: string, remark = '') {
 
 export async function deleteLocation(id: number) {
   const locationId = Number(id)
-  return withDatabaseMutation(async () => {
-    const db = await getDatabase()
-    const references = await db.select<{ count: number }[]>(`SELECT
-      (SELECT COUNT(*) FROM materials WHERE default_location_id=$1) +
-      (SELECT COUNT(*) FROM inventory_balances WHERE location_id=$1) +
-      (SELECT COUNT(*) FROM stock_transactions WHERE location_id=$1) AS count`, [locationId])
-    if (Number(references[0]?.count ?? 0) > 0) throw new Error('该存放位置已被物资或业务记录使用，不能删除；请先删除测试流水、修改物资默认库位，或保留该位置用于历史追溯')
-    return db.execute('DELETE FROM locations WHERE id=$1', [locationId])
-  })
+  return withDatabaseMutation(() => invoke('delete_location', { id: locationId }))
 }
 
 export async function deleteUnit(id: number) {
