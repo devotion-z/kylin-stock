@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { deleteInventoryPosition, listInventory, transferStock, type InventoryRow } from '../services/inventory'
@@ -22,7 +22,7 @@ const transferForm = reactive({ toLocationId: undefined as number | undefined, q
 
 async function refresh() {
   if (operationBusy.value) return
-  const query = { ...filters, location: isDistribution.value ? filters.location : '' }
+  const query = { ...filters, location: isDistribution.value ? filters.location : '', summary: !isDistribution.value }
   loading.value = true
   try {
     rows.value = await listInventory(query)
@@ -46,7 +46,7 @@ async function exportCurrent() {
   const exportRows = rows.value.slice()
   exporting.value = true
   try {
-    const path = await exportInventoryRows(exportRows)
+    const path = await exportInventoryRows(exportRows, isDistribution.value)
     if (path) ElMessage.success(`库存物资分布已导出（${exportRows.length} 条）`)
   } catch (e) {
     ElMessage.error(`导出失败：${e instanceof Error ? e.message : String(e)}`)
@@ -101,6 +101,10 @@ function handleManage(command: string, row: InventoryRow) {
 }
 
 onMounted(async () => { await Promise.all([refresh(), listLocations().then(value => { locations.value = value }).catch(() => undefined)]) })
+watch(isDistribution, () => {
+  filters.location = ''
+  refresh()
+})
 </script>
 
 <template>

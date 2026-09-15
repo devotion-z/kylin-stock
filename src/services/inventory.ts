@@ -15,8 +15,10 @@ export interface LedgerRow {
   id: number
   transaction_no: string
   type: 'IN' | 'OUT' | 'ADJUST'
+  material_id: number
   material_name: string
   unit_name: string | null
+  location_id: number
   location_name: string
   quantity: number
   occurred_at: string
@@ -33,6 +35,7 @@ export interface InventoryFilters {
   keyword?: string
   unit?: string
   location?: string
+  summary?: boolean
 }
 
 export interface LedgerFilters {
@@ -67,6 +70,10 @@ export interface StockTransferInput {
   handler?: string
   remark?: string
   adjustmentBasis?: string
+}
+
+export interface StockTransactionUpdateInput extends StockOperationInput {
+  id: number
 }
 
 function snapshotStockInput(input: StockOperationInput): StockOperationInput {
@@ -122,6 +129,13 @@ export function deleteStockTransaction(id: number) {
   return withDatabaseMutation(() => invoke<void>('delete_stock_transaction', { id }))
 }
 
+export function updateStockTransaction(input: StockTransactionUpdateInput) {
+  const payload = { ...snapshotStockInput(input), id: Number(input.id) }
+  if (!Number.isInteger(payload.id) || payload.id <= 0) throw new Error('无效的流水记录')
+  validate(payload)
+  return withDatabaseMutation(() => invoke<void>('update_stock_transaction', { input: payload }))
+}
+
 export function transferStock(input: StockTransferInput) {
   if (!input.materialId || !input.fromLocationId || !input.toLocationId) throw new Error('请选择物资和库位')
   if (input.fromLocationId === input.toLocationId) throw new Error('转入库位不能与原库位相同')
@@ -136,6 +150,13 @@ export function deleteInventoryPosition(materialId: number, locationId: number) 
 
 export function scanDocument(sourcePath: string) {
   return invoke<string>('scan_document', { sourcePath })
+}
+
+export function sortInventoryByLocation(rows: InventoryRow[]) {
+  const collator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' })
+  return rows.sort((left, right) =>
+    collator.compare(left.location_name, right.location_name)
+    || collator.compare(left.material_name, right.material_name))
 }
 
 export async function getTransactionIdByNo(transactionNo: string): Promise<number> {
@@ -155,8 +176,24 @@ export async function listInventory(filters: InventoryFilters | string = {}): Pr
   const unit = `%${(normalized.unit ?? '').trim()}%`
   const location = `%${(normalized.location ?? '').trim()}%`
 
-  return withDatabaseAccess(async () =>
-    (await getDatabase()).select<InventoryRow[]>(`
+  return withDatabaseAccess(async () => {
+    const db = await getDatabase()
+    if (normalized.summary) {
+      return db.select<InventoryRow[]>(`
+        SELECT MIN(b.material_id) AS material_id, m.name AS material_name, u.name AS unit_name,
+               0 AS location_id, '' AS location_name,
+               CAST(SUM(b.quantity) AS REAL) AS quantity, MAX(b.updated_at) AS updated_at
+        FROM inventory_balances b
+        JOIN materials m ON m.id=b.material_id
+        LEFT JOIN units u ON u.id=m.unit_id
+        WHERE ($1='%%' OR m.name LIKE $1)
+          AND ($2='%%' OR COALESCE(u.name,'') LIKE $2)
+        GROUP BY m.name COLLATE NOCASE, COALESCE(u.name,'') COLLATE NOCASE
+        HAVING SUM(b.quantity) <> 0
+        ORDER BY m.name COLLATE NOCASE, COALESCE(u.name,'') COLLATE NOCASE`, [keyword, unit])
+    }
+
+    const rows = await db.select<InventoryRow[]>(`
       SELECT b.material_id, m.name AS material_name, u.name AS unit_name,
              b.location_id, l.name AS location_name, b.quantity, b.updated_at
       FROM inventory_balances b
@@ -167,8 +204,10 @@ export async function listInventory(filters: InventoryFilters | string = {}): Pr
         AND ($1='%%' OR m.name LIKE $1)
         AND ($2='%%' OR COALESCE(u.name,'') LIKE $2)
         AND ($3='%%' OR l.name LIKE $3)
-      ORDER BY COALESCE(m.category, '') COLLATE NOCASE, l.name COLLATE NOCASE, m.name COLLATE NOCASE`, [keyword, unit, location]),
-  )
+      ORDER BY l.name COLLATE NOCASE, m.name COLLATE NOCASE`, [keyword, unit, location])
+
+    return sortInventoryByLocation(rows)
+  })
 }
 
 export async function listLedger(filters: LedgerFilters = {}): Promise<LedgerRow[]> {
@@ -179,8 +218,8 @@ export async function listLedger(filters: LedgerFilters = {}): Promise<LedgerRow
 
   return withDatabaseAccess(async () =>
     (await getDatabase()).select<LedgerRow[]>(`
-      SELECT t.id,t.transaction_no,t.type,m.name AS material_name,u.name AS unit_name,
-             l.name AS location_name,t.quantity,t.occurred_at,t.related_unit,t.destination,
+      SELECT t.id,t.transaction_no,t.type,t.material_id,m.name AS material_name,u.name AS unit_name,
+             t.location_id,l.name AS location_name,t.quantity,t.occurred_at,t.related_unit,t.destination,
              t.handler,t.receiver,t.remark,t.adjustment_basis,
              (SELECT COUNT(*) FROM attachments a WHERE a.entity_type='TRANSACTION' AND a.entity_id=t.id) AS attachment_count
       FROM stock_transactions t

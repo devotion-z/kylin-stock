@@ -2,17 +2,19 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import dayjs from 'dayjs'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { deleteStockTransaction, listLedger, type LedgerRow } from '../services/inventory'
-import { listMaterials, type Material } from '../services/masterData'
+import { deleteStockTransaction, listLedger, updateStockTransaction, type LedgerRow } from '../services/inventory'
+import { listLocations, listMaterials, type Location, type Material } from '../services/masterData'
 import { exportLedgerRows } from '../services/export'
 import { formatBusinessDate } from '../utils/date'
 import AttachmentField from '../components/AttachmentField.vue'
-import { listAttachments, type Attachment } from '../services/attachments'
+import { addAttachment, listAttachments, type Attachment } from '../services/attachments'
+import { parseQuantityInput } from '../utils/quantity'
 
 const loading = ref(false)
 const exporting = ref(false)
 const deletingId = ref<number | null>(null)
-const operationBusy = computed(() => loading.value || exporting.value || deletingId.value !== null)
+const editingId = ref<number | null>(null)
+const operationBusy = computed(() => loading.value || exporting.value || deletingId.value !== null || editingId.value !== null)
 const rows = ref<LedgerRow[]>([])
 const dateRange = ref<string[]>([])
 const filters = reactive({ basis: '', material: '', type: 'ALL', relatedUnit: '' })
@@ -20,6 +22,12 @@ const attachmentDialogVisible = ref(false)
 const attachmentDialogTitle = ref('单据图片')
 const attachments = ref<Attachment[]>([])
 const materialOptions = ref<Material[]>([])
+const locationOptions = ref<Location[]>([])
+const editDialogVisible = ref(false)
+const editRow = ref<LedgerRow | null>(null)
+const editAttachments = ref<Attachment[]>([])
+const editPendingAttachments = ref<string[]>([])
+const editForm = reactive({ materialId: undefined as number | undefined, locationId: undefined as number | undefined, quantity: '', occurredAt: '', relatedUnit: '', handler: '', receiver: '', remark: '', adjustmentBasis: '' })
 
 async function showAttachments(row: LedgerRow) {
   try {
@@ -48,7 +56,72 @@ async function refresh() {
 }
 
 async function loadMaterialOptions() {
-  try { materialOptions.value = await listMaterials() } catch (e) { ElMessage.error(`物资列表加载失败：${e instanceof Error ? e.message : String(e)}`) }
+  try {
+    ;[materialOptions.value, locationOptions.value] = await Promise.all([listMaterials(), listLocations()])
+  } catch (e) { ElMessage.error(`基础资料加载失败：${e instanceof Error ? e.message : String(e)}`) }
+}
+
+async function openEdit(row: LedgerRow) {
+  if (operationBusy.value) return
+  if (row.transaction_no.startsWith('TRANSFER-')) {
+    return ElMessage.warning('库内倒库会生成成对流水，不能单独编辑；请到“物资分布”重新倒库')
+  }
+  if (row.type === 'ADJUST') return ElMessage.warning('调整类流水暂不支持编辑')
+  editRow.value = row
+  Object.assign(editForm, {
+    materialId: row.material_id,
+    locationId: row.location_id,
+    quantity: String(row.quantity),
+    occurredAt: dayjs(row.occurred_at).format('YYYY-MM-DD'),
+    relatedUnit: row.related_unit ?? row.destination ?? '',
+    handler: row.handler ?? '',
+    receiver: row.receiver ?? '',
+    remark: row.remark ?? '',
+    adjustmentBasis: row.adjustment_basis ?? '',
+  })
+  editPendingAttachments.value = []
+  try {
+    editAttachments.value = await listAttachments('TRANSACTION', row.id)
+    editDialogVisible.value = true
+  } catch (e) { ElMessage.error(e instanceof Error ? e.message : String(e)) }
+}
+
+async function submitEdit() {
+  const row = editRow.value
+  if (!row || !editForm.materialId || !editForm.locationId) return ElMessage.warning('请选择物资和存放位置')
+  if (!editForm.occurredAt) return ElMessage.warning('请选择业务日期')
+  let quantity: number
+  try { quantity = parseQuantityInput(editForm.quantity) }
+  catch (e) { return ElMessage.warning(e instanceof Error ? e.message : String(e)) }
+  if (row.type === 'OUT' && !editForm.relatedUnit.trim()) return ElMessage.warning('请填写领用单位')
+
+  editingId.value = row.id
+  try {
+    await updateStockTransaction({
+      id: row.id,
+      materialId: editForm.materialId,
+      locationId: editForm.locationId,
+      quantity,
+      occurredAt: `${editForm.occurredAt}T00:00:00.000Z`,
+      relatedUnit: editForm.relatedUnit,
+      destination: row.type === 'OUT' ? editForm.relatedUnit : '',
+      handler: editForm.handler,
+      receiver: editForm.receiver,
+      remark: editForm.remark,
+      adjustmentBasis: editForm.adjustmentBasis,
+    })
+    while (editPendingAttachments.value.length) {
+      const path = editPendingAttachments.value[0]
+      const saved = await addAttachment('TRANSACTION', row.id, path)
+      editAttachments.value.push(saved)
+      editPendingAttachments.value.shift()
+    }
+    ElMessage.success('流水已修改，相关库存已同步更新')
+    editDialogVisible.value = false
+    editingId.value = null
+    await refresh()
+  } catch (e) { ElMessage.error(e instanceof Error ? e.message : String(e)) }
+  finally { editingId.value = null }
 }
 
 function reset() {
@@ -160,14 +233,34 @@ onMounted(() => { refresh(); loadMaterialOptions() })
       <el-table-column label="单据图片" width="100">
         <template #default="{ row }"><el-button v-if="row.attachment_count" link type="primary" @click="showAttachments(row)">查看（{{ row.attachment_count }}）</el-button><span v-else>-</span></template>
       </el-table-column>
-      <el-table-column label="操作" width="90" fixed="right">
-        <template #default="{ row }"><el-button link type="danger" :loading="deletingId === row.id" :disabled="operationBusy" @click="removeRow(row)">删除</el-button></template>
+      <el-table-column label="操作" width="140" fixed="right">
+        <template #default="{ row }">
+          <el-button link type="primary" :disabled="operationBusy" @click="openEdit(row)">编辑</el-button>
+          <el-button link type="danger" :loading="deletingId === row.id" :disabled="operationBusy" @click="removeRow(row)">删除</el-button>
+        </template>
       </el-table-column>
     </el-table>
   </el-card>
 
   <el-dialog v-model="attachmentDialogVisible" :title="attachmentDialogTitle" width="620px">
     <AttachmentField :attachments="attachments" readonly />
+  </el-dialog>
+
+  <el-dialog v-model="editDialogVisible" title="编辑出入库记录" width="640px" :close-on-click-modal="editingId === null" :close-on-press-escape="editingId === null">
+    <el-alert v-if="editRow" :title="`正在修正${editRow.type === 'IN' ? '入库' : '出库'}流水：${editRow.transaction_no}`" type="warning" :closable="false" show-icon style="margin-bottom:16px" />
+    <el-form label-width="110px" :disabled="editingId !== null">
+      <el-form-item label="物资名称" required><el-select v-model="editForm.materialId" filterable style="width:100%"><el-option v-for="item in materialOptions" :key="item.id" :label="item.name" :value="item.id" /></el-select></el-form-item>
+      <el-form-item label="存放位置" required><el-select v-model="editForm.locationId" filterable style="width:100%"><el-option v-for="item in locationOptions" :key="item.id" :label="item.name" :value="item.id" /></el-select></el-form-item>
+      <el-form-item label="数量" required><el-input v-model="editForm.quantity" inputmode="decimal" maxlength="18" /></el-form-item>
+      <el-form-item label="业务日期" required><el-date-picker v-model="editForm.occurredAt" type="date" value-format="YYYY-MM-DD" format="YYYY年MM月DD日" :editable="false" style="width:100%" /></el-form-item>
+      <el-form-item label="调拨依据"><el-input v-model="editForm.adjustmentBasis" /></el-form-item>
+      <el-form-item :label="editRow?.type === 'OUT' ? '领用单位' : '来源单位'" :required="editRow?.type === 'OUT'"><el-input v-model="editForm.relatedUnit" /></el-form-item>
+      <el-form-item label="经办人"><el-input v-model="editForm.handler" /></el-form-item>
+      <el-form-item v-if="editRow?.type === 'OUT'" label="领用人"><el-input v-model="editForm.receiver" /></el-form-item>
+      <el-form-item label="备注"><el-input v-model="editForm.remark" type="textarea" :rows="2" /></el-form-item>
+      <el-form-item label="单据图片"><AttachmentField v-model:pending="editPendingAttachments" :attachments="editAttachments" :disabled="editingId !== null" @removed="id => editAttachments = editAttachments.filter(item => item.id !== id)" /></el-form-item>
+    </el-form>
+    <template #footer><el-button :disabled="editingId !== null" @click="editDialogVisible=false">取消</el-button><el-button type="primary" :loading="editingId !== null" @click="submitEdit">保存并同步库存</el-button></template>
   </el-dialog>
 </template>
 

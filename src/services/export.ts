@@ -81,20 +81,19 @@ export async function exportLedgerRows(rows: LedgerRow[]) {
   return saveWorkbook(book, `出入库明细_${safeDateStamp()}.xlsx`)
 }
 
-export async function exportInventoryRows(rows: InventoryRow[]) {
-  const data = [
-    ['物资名称', '单位', '当前库存', '存放位置', '最后更新时间'],
-    ...rows.map((row) => [
-      row.material_name,
-      row.unit_name ?? '',
-      row.quantity,
-      row.location_name,
-      formatDateTime(row.updated_at),
-    ]),
-  ]
+export async function exportInventoryRows(rows: InventoryRow[], includeLocation = true) {
+  const data = includeLocation
+    ? [
+        ['物资名称', '单位', '当前库存', '存放位置', '最后更新时间'],
+        ...rows.map((row) => [row.material_name, row.unit_name ?? '', row.quantity, row.location_name, formatDateTime(row.updated_at)]),
+      ]
+    : [
+        ['物资名称', '单位', '当前库存', '最后更新时间'],
+        ...rows.map((row) => [row.material_name, row.unit_name ?? '', row.quantity, formatDateTime(row.updated_at)]),
+      ]
   const sheet = XLSX.utils.aoa_to_sheet(data)
-  setColumnWidths(sheet, [22, 10, 14, 20, 20])
+  setColumnWidths(sheet, includeLocation ? [22, 10, 14, 20, 20] : [22, 10, 14, 20])
   const book = XLSX.utils.book_new()
-  XLSX.utils.book_append_sheet(book, sheet, '库存物资分布')
-  return saveWorkbook(book, `库存物资分布_${safeDateStamp()}.xlsx`)
+  XLSX.utils.book_append_sheet(book, sheet, includeLocation ? '库存物资分布' : '当前库存')
+  return saveWorkbook(book, `${includeLocation ? '库存物资分布' : '当前库存'}_${safeDateStamp()}.xlsx`)
 }

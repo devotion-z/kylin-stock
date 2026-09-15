@@ -18,7 +18,7 @@ export async function chooseAttachmentImages(): Promise<string[]> {
   const selected = await open({
     multiple: true,
     title: '选择单据图片',
-    filters: [{ name: '图片', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'] }],
+    filters: [{ name: '图片', extensions: ['jpg', 'jpeg', 'jfif', 'png', 'webp', 'gif', 'bmp'] }],
   })
   if (!selected) return []
   const paths = Array.isArray(selected) ? selected : [selected]

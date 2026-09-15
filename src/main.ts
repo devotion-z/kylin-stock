@@ -1,4 +1,5 @@
 import { createApp } from 'vue'
+import { invoke } from '@tauri-apps/api/tauri'
 import ElementPlus from 'element-plus'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import 'element-plus/dist/index.css'
@@ -15,7 +16,14 @@ async function bootstrap() {
   // while SQLite performs its first-run migration. Views await the same
   // initialization promise through getDatabase().
   app.mount('#app')
+  // The native window starts hidden so neither first launch nor a rejected
+  // second instance can flash an empty white webview. Show it only after the
+  // inline startup animation and Vue shell have both reached the DOM.
+  await invoke('show_main_window')
   await initializeDatabase()
+  const startup = document.getElementById('startup-screen')
+  startup?.classList.add('startup-done')
+  window.setTimeout(() => startup?.remove(), 320)
 }
 
 bootstrap().catch((error) => {

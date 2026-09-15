@@ -5,6 +5,16 @@ mod inventory;
 mod migration;
 mod single_instance;
 
+use tauri::{AppHandle, Manager};
+
+#[tauri::command]
+fn show_main_window(app: AppHandle) -> Result<(), String> {
+    app.get_window("main")
+        .ok_or_else(|| "找不到应用主窗口".to_string())?
+        .show()
+        .map_err(|e| format!("无法显示应用主窗口：{e}"))
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| single_instance::acquire(app).map_err(Into::into))
@@ -22,10 +32,12 @@ pub fn run() {
             inventory::stock_in_batch,
             inventory::stock_out_batch,
             inventory::delete_stock_transaction,
+            inventory::update_stock_transaction,
             inventory::transfer_stock,
             inventory::delete_inventory_position,
             inventory::scan_document,
-            migration::initialize_database_schema
+            migration::initialize_database_schema,
+            show_main_window
         ])
         .run(tauri::generate_context!())
         .expect("error while running KylinStock");

@@ -66,7 +66,7 @@ async function removeExisting(item: Attachment) {
 <template>
   <div class="attachment-field">
     <el-button v-if="!readonly" :disabled="disabled || attachments.length + pending.length >= 10" @click="choose">添加单据图片</el-button>
-    <span class="hint">JPG/PNG/WebP/GIF/BMP，单张不超过 15 MB，最多 10 张</span>
+    <span class="hint">JPG/JPEG/JFIF/PNG/WebP/GIF/BMP，单张不超过 15 MB，最多 10 张</span>
     <div v-if="attachments.length || pending.length" class="file-list">
       <div v-for="item in attachments" :key="`saved-${item.id}`" class="file-item">
         <span class="file-name">{{ item.fileName }}</span>

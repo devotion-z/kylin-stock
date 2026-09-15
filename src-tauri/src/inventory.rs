@@ -1,6 +1,6 @@
 use serde::Deserialize;
 use sqlx::{Connection, SqliteConnection};
-use std::{fs, path::PathBuf, process::Command};
+use std::{collections::HashMap, fs, path::PathBuf, process::Command};
 use tauri::AppHandle;
 use uuid::Uuid;
 
@@ -30,6 +30,22 @@ pub struct StockTransferInput {
     quantity: f64,
     occurred_at: String,
     handler: Option<String>,
+    remark: Option<String>,
+    adjustment_basis: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StockTransactionUpdateInput {
+    id: i64,
+    material_id: i64,
+    location_id: i64,
+    quantity: f64,
+    occurred_at: String,
+    related_unit: Option<String>,
+    destination: Option<String>,
+    handler: Option<String>,
+    receiver: Option<String>,
     remark: Option<String>,
     adjustment_basis: Option<String>,
 }
@@ -392,8 +408,8 @@ pub async fn delete_stock_transaction(app: AppHandle, id: i64) -> Result<(), Str
     let mut connection = open_connection(&app).await?;
     begin_immediate(&mut connection).await?;
     let result: Result<(), String> = async {
-        let record = sqlx::query_as::<_, (String, i64, i64, f64)>(
-            "SELECT type, material_id, location_id, CAST(quantity AS REAL) FROM stock_transactions WHERE id=?",
+        let record = sqlx::query_as::<_, (String, String, i64, i64, f64)>(
+            "SELECT transaction_no,type,material_id,location_id,CAST(quantity AS REAL) FROM stock_transactions WHERE id=?",
         )
         .bind(id)
         .fetch_optional(&mut connection)
@@ -401,7 +417,10 @@ pub async fn delete_stock_transaction(app: AppHandle, id: i64) -> Result<(), Str
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "找不到要删除的流水记录".to_string())?;
 
-        let (kind, material_id, location_id, quantity) = record;
+        let (number, kind, material_id, location_id, quantity) = record;
+        if number.starts_with("TRANSFER-") {
+            return Err("库内倒库会生成成对流水，不能单独删除；如需纠正请执行反向倒库".into());
+        }
         if kind == "IN" {
             let update = sqlx::query(
                 "UPDATE inventory_balances SET quantity=quantity-?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE material_id=? AND location_id=? AND quantity>=?",
@@ -453,6 +472,141 @@ pub async fn delete_stock_transaction(app: AppHandle, id: i64) -> Result<(), Str
             Err(format!("删除流水失败：{error}"))
         }
     }
+}
+
+async fn update_stock_transaction_on_connection(
+    connection: &mut SqliteConnection,
+    input: &StockTransactionUpdateInput,
+) -> Result<(), String> {
+    if input.id <= 0 {
+        return Err("无效的流水记录".into());
+    }
+    let validation_input = StockOperationInput {
+        material_id: input.material_id,
+        location_id: input.location_id,
+        quantity: input.quantity,
+        occurred_at: input.occurred_at.clone(),
+        related_unit: input.related_unit.clone(),
+        destination: input.destination.clone(),
+        handler: input.handler.clone(),
+        receiver: input.receiver.clone(),
+        remark: input.remark.clone(),
+        adjustment_basis: input.adjustment_basis.clone(),
+    };
+    validate(&validation_input)?;
+
+    begin_immediate(connection).await?;
+    let result: Result<(), String> = async {
+        let old = sqlx::query_as::<_, (String, String, i64, i64, f64)>(
+            "SELECT transaction_no,type,material_id,location_id,CAST(quantity AS REAL) FROM stock_transactions WHERE id=?",
+        )
+        .bind(input.id)
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "找不到要编辑的流水记录".to_string())?;
+
+        let (number, kind, old_material_id, old_location_id, old_quantity) = old;
+        if number.starts_with("TRANSFER-") {
+            return Err("库内倒库会生成成对流水，不能单独编辑其中一条；请在物资分布中重新倒库".into());
+        }
+        if kind != "IN" && kind != "OUT" {
+            return Err("调整类流水暂不支持编辑".into());
+        }
+        let destination = if kind == "OUT" {
+            Some(clean(&input.destination).ok_or_else(|| "领用单位不能为空".to_string())?)
+        } else {
+            None
+        };
+
+        // Calculate the net effect for each affected material/location first.
+        // This avoids a false failure when an entry is edited in place (for
+        // example changing one inbound quantity from 100 to 120 while only 50
+        // remains after later outbound operations).
+        let old_effect = if kind == "IN" { old_quantity } else { -old_quantity };
+        let new_effect = if kind == "IN" { input.quantity } else { -input.quantity };
+        let mut deltas: HashMap<(i64, i64), f64> = HashMap::new();
+        *deltas.entry((old_material_id, old_location_id)).or_default() -= old_effect;
+        *deltas.entry((input.material_id, input.location_id)).or_default() += new_effect;
+
+        for ((material_id, location_id), delta) in deltas {
+            if delta.abs() <= f64::EPSILON {
+                continue;
+            }
+            let current = sqlx::query_scalar::<_, f64>(
+                "SELECT CAST(quantity AS REAL) FROM inventory_balances WHERE material_id=? AND location_id=?",
+            )
+            .bind(material_id)
+            .bind(location_id)
+            .fetch_optional(&mut *connection)
+            .await
+            .map_err(|e| e.to_string())?
+            .unwrap_or(0.0);
+            let corrected = current + delta;
+            if corrected < -f64::EPSILON {
+                return Err(format!(
+                    "修改后会导致库存为负数（当前 {current}，变化 {delta}），请先检查后续业务记录"
+                ));
+            }
+            sqlx::query(
+                r#"INSERT INTO inventory_balances(material_id,location_id,quantity,updated_at)
+                   VALUES (?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                   ON CONFLICT(material_id,location_id) DO UPDATE SET
+                   quantity=excluded.quantity,updated_at=excluded.updated_at"#,
+            )
+            .bind(material_id)
+            .bind(location_id)
+            .bind(if corrected.abs() <= f64::EPSILON { 0.0 } else { corrected })
+            .execute(&mut *connection)
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+
+        let updated = sqlx::query(
+            r#"UPDATE stock_transactions SET
+               material_id=?,location_id=?,quantity=?,occurred_at=?,related_unit=?,destination=?,
+               handler=?,receiver=?,remark=?,adjustment_basis=? WHERE id=?"#,
+        )
+        .bind(input.material_id)
+        .bind(input.location_id)
+        .bind(input.quantity)
+        .bind(input.occurred_at.trim())
+        .bind(clean(&input.related_unit))
+        .bind(destination)
+        .bind(clean(&input.handler))
+        .bind(clean(&input.receiver))
+        .bind(clean(&input.remark))
+        .bind(clean(&input.adjustment_basis))
+        .bind(input.id)
+        .execute(&mut *connection)
+        .await
+        .map_err(|e| e.to_string())?;
+        if updated.rows_affected() != 1 {
+            return Err("流水记录更新失败，请重试".into());
+        }
+        Ok(())
+    }
+    .await;
+
+    match result {
+        Ok(()) => commit(connection).await,
+        Err(error) => {
+            rollback(connection).await;
+            Err(format!("编辑流水失败：{error}"))
+        }
+    }
+}
+
+/// Correct a mistaken inbound/outbound entry and apply the exact net change to
+/// inventory in the same SQLite transaction. Existing attachment ids remain
+/// attached to the corrected ledger row.
+#[tauri::command]
+pub async fn update_stock_transaction(
+    app: AppHandle,
+    input: StockTransactionUpdateInput,
+) -> Result<(), String> {
+    let mut connection = open_connection(&app).await?;
+    update_stock_transaction_on_connection(&mut connection, &input).await
 }
 
 /// Move stock between two locations and record both sides of the internal
@@ -722,6 +876,22 @@ mod tests {
             .expect("count transactions")
     }
 
+    fn update_input(id: i64, quantity: f64) -> StockTransactionUpdateInput {
+        StockTransactionUpdateInput {
+            id,
+            material_id: 1,
+            location_id: 1,
+            quantity,
+            occurred_at: "2026-08-17T00:00:00.000Z".into(),
+            related_unit: Some("修正来源单位".into()),
+            destination: None,
+            handler: Some("修正经办人".into()),
+            receiver: None,
+            remark: Some("修正错账".into()),
+            adjustment_basis: Some("更正单".into()),
+        }
+    }
+
     #[tokio::test]
     async fn stock_in_creates_ledger_and_balance_atomically() {
         let mut connection = test_connection().await;
@@ -804,5 +974,65 @@ mod tests {
             .expect("batch stock in succeeds");
         assert_eq!(numbers.len(), 2);
         assert_eq!(transaction_count(&mut connection, "IN").await, 2);
+    }
+
+    #[tokio::test]
+    async fn editing_inbound_quantity_updates_balance_atomically() {
+        let mut connection = test_connection().await;
+        stock_in_on_connection(&mut connection, &input(10.0))
+            .await
+            .expect("seed stock");
+        let id = sqlx::query_scalar::<_, i64>("SELECT id FROM stock_transactions LIMIT 1")
+            .fetch_one(&mut connection)
+            .await
+            .expect("read transaction id");
+
+        update_stock_transaction_on_connection(&mut connection, &update_input(id, 12.5))
+            .await
+            .expect("edit transaction");
+
+        assert_eq!(balance(&mut connection).await, 12.5);
+        let corrected = sqlx::query_as::<_, (f64, String)>(
+            "SELECT CAST(quantity AS REAL),remark FROM stock_transactions WHERE id=?",
+        )
+        .bind(id)
+        .fetch_one(&mut connection)
+        .await
+        .expect("read corrected transaction");
+        assert_eq!(corrected, (12.5, "修正错账".into()));
+    }
+
+    #[tokio::test]
+    async fn editing_inbound_below_consumed_quantity_rolls_back() {
+        let mut connection = test_connection().await;
+        stock_in_on_connection(&mut connection, &input(10.0))
+            .await
+            .expect("seed stock");
+        let mut outbound = input(8.0);
+        outbound.destination = Some("测试领用单位".into());
+        stock_out_on_connection(&mut connection, &outbound)
+            .await
+            .expect("consume stock");
+        let id = sqlx::query_scalar::<_, i64>(
+            "SELECT id FROM stock_transactions WHERE type='IN' LIMIT 1",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .expect("read inbound id");
+
+        let error = update_stock_transaction_on_connection(&mut connection, &update_input(id, 5.0))
+            .await
+            .expect_err("negative balance edit must fail");
+
+        assert!(error.contains("库存为负数"));
+        assert_eq!(balance(&mut connection).await, 2.0);
+        let original = sqlx::query_scalar::<_, f64>(
+            "SELECT CAST(quantity AS REAL) FROM stock_transactions WHERE id=?",
+        )
+        .bind(id)
+        .fetch_one(&mut connection)
+        .await
+        .expect("read original transaction");
+        assert_eq!(original, 10.0);
     }
 }

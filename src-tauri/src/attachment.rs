@@ -38,7 +38,7 @@ fn validate_entity_type(value: &str) -> Result<&str, String> {
 fn detect_image_mime(data: &[u8]) -> Option<&'static str> {
     if data.starts_with(b"\x89PNG\r\n\x1a\n") {
         Some("image/png")
-    } else if data.starts_with(&[0xff, 0xd8, 0xff]) {
+    } else if data.starts_with(&[0xff, 0xd8]) {
         Some("image/jpeg")
     } else if data.len() >= 12 && &data[..4] == b"RIFF" && &data[8..12] == b"WEBP" {
         Some("image/webp")
@@ -48,6 +48,17 @@ fn detect_image_mime(data: &[u8]) -> Option<&'static str> {
         Some("image/bmp")
     } else {
         None
+    }
+}
+
+fn mime_from_extension(path: &Path) -> Option<&'static str> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "jpg" | "jpeg" | "jfif" => Some("image/jpeg"),
+        "png" => Some("image/png"),
+        "webp" => Some("image/webp"),
+        "gif" => Some("image/gif"),
+        "bmp" => Some("image/bmp"),
+        _ => None,
     }
 }
 
@@ -94,7 +105,12 @@ pub async fn add_attachment(
     }
 
     let data = fs::read(path).map_err(|e| format!("无法读取图片：{e}"))?;
+    // A few Kylin/phone image exporters write non-standard JPEG marker
+    // layouts even though the OS image viewer opens the file correctly. Keep
+    // signature detection as the first choice and use a supported extension as
+    // a compatibility fallback instead of dropping the receipt after booking.
     let mime_type = detect_image_mime(&data)
+        .or_else(|| mime_from_extension(path))
         .ok_or_else(|| "仅支持 JPG、PNG、WebP、GIF 或 BMP 图片".to_string())?;
     let file_name = path
         .file_name()
@@ -233,5 +249,18 @@ mod tests {
     #[test]
     fn rejects_files_that_only_claim_to_be_images() {
         assert_eq!(detect_image_mime(b"not an image"), None);
+    }
+
+    #[test]
+    fn accepts_common_image_extensions_as_kylin_compatibility_fallback() {
+        assert_eq!(
+            mime_from_extension(Path::new("现场照片.JFIF")),
+            Some("image/jpeg")
+        );
+        assert_eq!(
+            mime_from_extension(Path::new("单据.jpg")),
+            Some("image/jpeg")
+        );
+        assert_eq!(mime_from_extension(Path::new("说明.txt")), None);
     }
 }

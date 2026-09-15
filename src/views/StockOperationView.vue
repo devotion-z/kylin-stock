@@ -141,7 +141,7 @@ async function submit() {
         attachmentWarning = e instanceof Error ? e.message : String(e)
       }
     }
-    if (attachmentWarning) ElMessage.warning(`登记已成功，但有单据图片未保存：${attachmentWarning}`)
+    if (attachmentWarning) ElMessage.warning(`登记已成功，但有单据图片未保存：${attachmentWarning}。可到“出入库明细－编辑”中重新添加`)
     else ElMessage.success(isOut.value ? '出库登记成功' : '入库登记成功')
     Object.assign(form, { occurredAt: toLocalDateValue(), adjustmentBasis: '', relatedUnit: '', handler: '', receiver: '', remark: '' })
     lines.value = [{ quantity: '1' }]

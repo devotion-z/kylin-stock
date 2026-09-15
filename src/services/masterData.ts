@@ -55,9 +55,11 @@ export function resolveUnitChoice(choice: MasterDataChoice, units: Unit[]) {
 }
 
 export async function listLocations(): Promise<Location[]> {
-  return withDatabaseAccess(async () =>
-    (await getDatabase()).select<Location[]>('SELECT id, name, remark, status FROM locations WHERE status = 1 ORDER BY name'),
-  )
+  return withDatabaseAccess(async () => {
+    const rows = await (await getDatabase()).select<Location[]>('SELECT id, name, remark, status FROM locations WHERE status = 1 ORDER BY name')
+    const collator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' })
+    return rows.sort((left, right) => collator.compare(left.name, right.name))
+  })
 }
 
 export async function createLocation(name: string, remark = '') {
