@@ -140,22 +140,21 @@ export async function saveMaterial(input: {
   return withDatabaseMutation(async () => {
     const db = await getDatabase()
 
-    // V1 intentionally has no user-visible product/SKU code. Therefore the
-    // material name is the human-facing identity. Keep duplicate detection and
-    // the following INSERT/UPDATE in the same application mutation turn so two
-    // callers cannot both pass the precheck concurrently.
+    // A material can have balances in many locations; its default location is
+    // not part of its identity. Keep one master row per name + unit so stock
+    // cannot be split across visually identical dropdown entries.
     const conflicts = await db.select<{ id: number; status: number }[]>(`
       SELECT id, status
       FROM materials
       WHERE name = $1 COLLATE NOCASE
-        AND (($3 IS NULL AND default_location_id IS NULL) OR default_location_id = $3)
+        AND COALESCE(unit_id,-1) = COALESCE($3,-1)
         AND ($2 IS NULL OR id <> $2)
         LIMIT 1
-    `, [normalized.name, normalized.id ?? null, normalized.locationId])
+    `, [normalized.name, normalized.id ?? null, normalized.unitId])
     if (conflicts.length) {
       throw new Error(conflicts[0].status === 0
-        ? '同名同库位物资已停用，请直接重新启用原物资'
-        : '同名同库位物资已存在，请勿重复添加')
+        ? '同名同计量单位物资已停用，请直接重新启用原物资'
+        : '同名同计量单位物资已存在；一个物资可存放在多个库房，请勿重复添加')
     }
 
     if (normalized.barcode) {

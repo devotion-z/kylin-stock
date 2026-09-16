@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { listLocations, listMaterials, type Location, type Material } from '../services/masterData'
-import { getTransactionIdByNo, scanDocument, stockInBatch, stockOutBatch } from '../services/inventory'
+import { getTransactionIdByNo, listInventory, scanDocument, stockInBatch, stockOutBatch, type InventoryRow } from '../services/inventory'
 import { toLocalDateValue } from '../utils/date'
 import AttachmentField from '../components/AttachmentField.vue'
 import { addAttachment, chooseAttachmentImages } from '../services/attachments'
@@ -16,6 +16,7 @@ const submitting = ref(false)
 const loading = ref(false)
 const materials = ref<Material[]>([])
 const locations = ref<Location[]>([])
+const inventoryRows = ref<InventoryRow[]>([])
 const pendingAttachments = ref<string[]>([])
 const relatedUnitOptions = ref<BusinessOption[]>([])
 const scanCode = ref('')
@@ -29,8 +30,8 @@ const form = reactive({ occurredAt: toLocalDateValue(), adjustmentBasis: '', rel
 async function load() {
   loading.value = true
   try {
-    ;[materials.value, locations.value, relatedUnitOptions.value] = await Promise.all([
-      listMaterials(), listLocations(), listBusinessOptions('RELATED_UNIT'),
+    ;[materials.value, locations.value, relatedUnitOptions.value, inventoryRows.value] = await Promise.all([
+      listMaterials(), listLocations(), listBusinessOptions('RELATED_UNIT'), listInventory(),
     ])
     materials.value = materials.value.filter((item) => item.status === 1)
   } catch (e) {
@@ -42,13 +43,36 @@ async function load() {
 
 function onMaterialChange(index: number, id: number) {
   const material = materials.value.find((item) => item.id === id)
-  if (material?.default_location_id) lines.value[index].locationId = material.default_location_id
+  if (!material) return
+  if (isOut.value) {
+    const stocked = inventoryRows.value
+      .filter((item) => item.material_id === id && Number(item.quantity) > 0)
+      .sort((left, right) => Number(right.quantity) - Number(left.quantity))
+    const preferred = stocked.find((item) => item.location_id === material.default_location_id) ?? stocked[0]
+    lines.value[index].locationId = preferred?.location_id
+  } else if (material.default_location_id) {
+    lines.value[index].locationId = material.default_location_id
+  }
 }
 
 function materialLabel(item: Material) {
   const location = item.default_location_id ? locations.value.find((entry) => entry.id === item.default_location_id)?.name : ''
-  const details = [item.unit_name, location].filter(Boolean).join(' · ')
+  const available = inventoryRows.value
+    .filter((row) => row.material_id === item.id)
+    .reduce((sum, row) => sum + Number(row.quantity), 0)
+  const details = [item.unit_name, location, isOut.value ? `可用 ${formatQuantity(available)}` : ''].filter(Boolean).join(' · ')
   return details ? `${item.name}（${details}）` : item.name
+}
+
+const quantityFormatter = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 6 })
+function formatQuantity(value: number) { return quantityFormatter.format(value) }
+function availableQuantity(materialId?: number, locationId?: number) {
+  if (!materialId || !locationId) return 0
+  return Number(inventoryRows.value.find((item) => item.material_id === materialId && item.location_id === locationId)?.quantity ?? 0)
+}
+function locationLabel(location: Location, line: OperationLine) {
+  if (!isOut.value || !line.materialId) return location.name
+  return `${location.name}（可用 ${formatQuantity(availableQuantity(line.materialId, location.id))}）`
 }
 
 function addLine() { lines.value.push({ quantity: '1' }) }
@@ -150,14 +174,16 @@ async function submit() {
     scanTextPreview.value = ''
     scanMatchedCount.value = 0
     relatedUnitOptions.value = await listBusinessOptions('RELATED_UNIT')
+    inventoryRows.value = await listInventory()
   } catch (e) { ElMessage.error(e instanceof Error ? e.message : String(e)) }
   finally { submitting.value = false }
 }
 
-watch(() => route.path, () => {
+watch(() => route.path, (path) => {
+  if (path !== '/stock-in' && path !== '/stock-out') return
   if (!submitting.value) reset()
-})
-onMounted(load)
+  void load()
+}, { immediate: true })
 </script>
 
 <template>
@@ -184,10 +210,13 @@ onMounted(load)
               <el-option v-for="item in materials" :key="item.id" :label="materialLabel(item)" :value="item.id" />
             </el-select>
             <el-select v-model="line.locationId" filterable placeholder="存放位置" class="line-location">
-              <el-option v-for="item in locations" :key="item.id" :label="item.name" :value="item.id" />
+              <el-option v-for="item in locations" :key="item.id" :label="locationLabel(item, line)" :value="item.id" />
             </el-select>
             <el-input v-model="line.quantity" inputmode="decimal" maxlength="18" placeholder="数量" class="line-quantity" />
             <el-button link type="danger" :disabled="lines.length === 1" @click="removeLine(index)">删除</el-button>
+          </div>
+          <div v-if="isOut && lines.some(line => line.materialId && line.locationId)" class="stock-hint">
+            库存按“物资＋库房”实时显示；选择物资后会优先带出有库存的库房。
           </div>
           <el-button plain type="primary" :disabled="submitting" @click="addLine">+ 添加一行物资</el-button>
         </div>
@@ -215,6 +244,7 @@ onMounted(load)
 .line-material { flex: 1.5; min-width: 180px; }
 .line-location { flex: 1; min-width: 150px; }
 .line-quantity { width: 130px; }
+.stock-hint { color: var(--el-text-color-secondary); font-size: 12px; }
 .scan-box { width: 100%; }
 .scan-box .el-alert { margin-top: 8px; }
 .scan-preview { margin-top: 8px; }

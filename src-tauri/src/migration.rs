@@ -3,7 +3,7 @@ use std::{fs, path::PathBuf, str::FromStr, time::Duration};
 use tauri::AppHandle;
 
 const DATABASE_FILE: &str = "kylin-stock.db";
-pub(crate) const LATEST_SCHEMA_VERSION: i64 = 7;
+pub(crate) const LATEST_SCHEMA_VERSION: i64 = 8;
 
 struct Migration {
     version: i64,
@@ -153,6 +153,58 @@ const MIGRATIONS: &[Migration] = &[
             "CREATE INDEX IF NOT EXISTS idx_transactions_occurred_id ON stock_transactions(occurred_at DESC, id DESC)",
             "CREATE INDEX IF NOT EXISTS idx_transactions_material_occurred_id ON stock_transactions(material_id, occurred_at DESC, id DESC)",
             "CREATE INDEX IF NOT EXISTS idx_transactions_type_occurred_id ON stock_transactions(type, occurred_at DESC, id DESC)",
+        ],
+    },
+    Migration {
+        version: 8,
+        statements: &[
+            "UPDATE materials SET name=TRIM(name) WHERE name<>TRIM(name)",
+            "DROP TABLE IF EXISTS temp.material_merge_map",
+            r#"CREATE TEMP TABLE material_merge_map(
+                duplicate_id INTEGER PRIMARY KEY,
+                canonical_id INTEGER NOT NULL
+            )"#,
+            r#"INSERT INTO material_merge_map(duplicate_id,canonical_id)
+               SELECT m.id,
+                      (SELECT m2.id FROM materials m2
+                       WHERE m2.name=m.name COLLATE NOCASE
+                         AND COALESCE(m2.unit_id,-1)=COALESCE(m.unit_id,-1)
+                       ORDER BY CASE WHEN TRIM(COALESCE(m2.barcode,''))<>'' THEN 0 ELSE 1 END,
+                                (SELECT COUNT(*) FROM stock_transactions t2 WHERE t2.material_id=m2.id) DESC,
+                                (SELECT COUNT(*) FROM inventory_balances b2 WHERE b2.material_id=m2.id AND ABS(b2.quantity)>0.0000001) DESC,
+                                m2.id
+                       LIMIT 1)
+               FROM materials m
+               WHERE m.id<>(SELECT m2.id FROM materials m2
+                             WHERE m2.name=m.name COLLATE NOCASE
+                               AND COALESCE(m2.unit_id,-1)=COALESCE(m.unit_id,-1)
+                             ORDER BY CASE WHEN TRIM(COALESCE(m2.barcode,''))<>'' THEN 0 ELSE 1 END,
+                                      (SELECT COUNT(*) FROM stock_transactions t2 WHERE t2.material_id=m2.id) DESC,
+                                      (SELECT COUNT(*) FROM inventory_balances b2 WHERE b2.material_id=m2.id AND ABS(b2.quantity)>0.0000001) DESC,
+                                      m2.id
+                             LIMIT 1)"#,
+            "DROP TABLE IF EXISTS temp.merged_inventory_balances",
+            r#"CREATE TEMP TABLE merged_inventory_balances AS
+               SELECT COALESCE(mm.canonical_id,b.material_id) AS material_id,
+                      b.location_id,
+                      SUM(b.quantity) AS quantity,
+                      MAX(b.updated_at) AS updated_at
+               FROM inventory_balances b
+               LEFT JOIN material_merge_map mm ON mm.duplicate_id=b.material_id
+               GROUP BY COALESCE(mm.canonical_id,b.material_id),b.location_id"#,
+            "DELETE FROM inventory_balances",
+            r#"INSERT INTO inventory_balances(material_id,location_id,quantity,updated_at)
+               SELECT material_id,location_id,quantity,updated_at FROM merged_inventory_balances"#,
+            r#"UPDATE stock_transactions
+               SET material_id=(SELECT canonical_id FROM material_merge_map WHERE duplicate_id=stock_transactions.material_id)
+               WHERE material_id IN (SELECT duplicate_id FROM material_merge_map)"#,
+            r#"UPDATE attachments
+               SET entity_id=(SELECT canonical_id FROM material_merge_map WHERE duplicate_id=attachments.entity_id)
+               WHERE entity_type='MATERIAL' AND entity_id IN (SELECT duplicate_id FROM material_merge_map)"#,
+            "DELETE FROM materials WHERE id IN (SELECT duplicate_id FROM material_merge_map)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_materials_name_unit_unique ON materials(name COLLATE NOCASE,COALESCE(unit_id,-1))",
+            "DROP TABLE IF EXISTS temp.merged_inventory_balances",
+            "DROP TABLE IF EXISTS temp.material_merge_map",
         ],
     },
 ];
@@ -320,6 +372,7 @@ mod tests {
             "idx_transactions_occurred_id",
             "idx_transactions_material_occurred_id",
             "idx_transactions_type_occurred_id",
+            "idx_materials_name_unit_unique",
         ] {
             let count = sqlx::query_scalar::<_, i64>(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?",
@@ -362,6 +415,106 @@ mod tests {
             detail.contains("idx_transactions_material_occurred_id"),
             "{detail}"
         );
+    }
+
+    #[tokio::test]
+    async fn duplicate_materials_are_merged_without_losing_stock_history_or_attachments() {
+        let mut connection = memory_database().await;
+        run_migrations_on_connection(&mut connection)
+            .await
+            .expect("create current schema");
+        sqlx::query("DROP INDEX idx_materials_name_unit_unique")
+            .execute(&mut connection)
+            .await
+            .expect("simulate pre-v8 schema");
+        sqlx::query("INSERT INTO locations(id,name,status) VALUES (1,'1号库',1),(2,'2号库',1)")
+            .execute(&mut connection)
+            .await
+            .expect("seed locations");
+        sqlx::query(
+            "INSERT INTO materials(id,name,unit_id,default_location_id,status,created_at,updated_at) VALUES
+             (10,'毛巾',1,1,1,'2026-09-01','2026-09-01'),
+             (11,'毛巾',1,2,1,'2026-09-02','2026-09-02')",
+        )
+        .execute(&mut connection)
+        .await
+        .expect("seed duplicate materials");
+        sqlx::query("UPDATE materials SET barcode='TOWEL-001' WHERE id=11")
+            .execute(&mut connection)
+            .await
+            .expect("prefer the documented master row");
+        sqlx::query(
+            "INSERT INTO inventory_balances(material_id,location_id,quantity,updated_at) VALUES
+             (10,1,1590,'2026-09-15'),(11,1,190,'2026-09-16')",
+        )
+        .execute(&mut connection)
+        .await
+        .expect("seed split balances");
+        sqlx::query(
+            "INSERT INTO stock_transactions(transaction_no,type,material_id,location_id,quantity,occurred_at,created_at) VALUES
+             ('IN-OLD','IN',10,1,1590,'2026-09-15','2026-09-15'),
+             ('IN-NEW','IN',11,1,190,'2026-09-16','2026-09-16')",
+        )
+        .execute(&mut connection)
+        .await
+        .expect("seed split history");
+        sqlx::query(
+            "INSERT INTO attachments(entity_type,entity_id,file_name,mime_type,file_size,data,created_at)
+             VALUES ('MATERIAL',10,'receipt.png','image/png',1,X'01','2026-09-15')",
+        )
+        .execute(&mut connection)
+        .await
+        .expect("seed material attachment");
+        sqlx::query("PRAGMA user_version=7")
+            .execute(&mut connection)
+            .await
+            .expect("mark pre-v8 database");
+
+        run_migrations_on_connection(&mut connection)
+            .await
+            .expect("merge duplicate masters");
+
+        let materials = sqlx::query_as::<_, (i64, String, Option<String>)>(
+            "SELECT id,name,barcode FROM materials WHERE name='毛巾' COLLATE NOCASE",
+        )
+        .fetch_all(&mut connection)
+        .await
+        .expect("read merged material");
+        assert_eq!(
+            materials,
+            vec![(11, "毛巾".into(), Some("TOWEL-001".into()))]
+        );
+        let balances = sqlx::query_as::<_, (i64, i64, f64)>(
+            "SELECT material_id,location_id,CAST(quantity AS REAL) FROM inventory_balances WHERE material_id=11",
+        )
+        .fetch_all(&mut connection)
+        .await
+        .expect("read merged balance");
+        assert_eq!(balances, vec![(11, 1, 1780.0)]);
+        let transaction_materials = sqlx::query_scalar::<_, i64>(
+            "SELECT material_id FROM stock_transactions ORDER BY transaction_no",
+        )
+        .fetch_all(&mut connection)
+        .await
+        .expect("read migrated history");
+        assert_eq!(transaction_materials, vec![11, 11]);
+        let attachment_owner = sqlx::query_scalar::<_, i64>(
+            "SELECT entity_id FROM attachments WHERE entity_type='MATERIAL'",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .expect("read migrated attachment");
+        assert_eq!(attachment_owner, 11);
+        let duplicate_insert = sqlx::query(
+            "INSERT INTO materials(name,unit_id,status,created_at,updated_at) VALUES ('毛巾',1,1,'2026-09-16','2026-09-16')",
+        )
+        .execute(&mut connection)
+        .await;
+        assert!(
+            duplicate_insert.is_err(),
+            "duplicate master row must stay blocked"
+        );
+        assert_eq!(user_version(&mut connection).await, LATEST_SCHEMA_VERSION);
     }
 
     #[tokio::test]
