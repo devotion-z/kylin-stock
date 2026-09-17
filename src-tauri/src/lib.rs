@@ -29,6 +29,7 @@ pub fn run() {
             database::database_execute,
             database::delete_location,
             database::database_select,
+            database::merge_materials,
             inventory::stock_in,
             inventory::stock_out,
             inventory::stock_in_batch,

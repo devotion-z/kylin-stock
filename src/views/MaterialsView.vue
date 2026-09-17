@@ -89,7 +89,7 @@ async function submit() {
       pendingAttachments.value.shift()
     }
     dialogVisible.value = false
-    ElMessage.success('保存成功')
+    ElMessage.success(result.merged ? '保存成功，重复物资及其库存记录已合并' : '保存成功')
     await loadData(keyword.value)
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : String(e))

@@ -24,6 +24,14 @@ pub struct DeleteLocationResult {
     removed_zero_balances: u64,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeMaterialResult {
+    rows_affected: u64,
+    last_insert_id: i64,
+    merged: bool,
+}
+
 fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
     let app_config = app
         .path_resolver()
@@ -223,6 +231,136 @@ pub async fn delete_location(app: AppHandle, id: i64) -> Result<DeleteLocationRe
     delete_location_from_connection(&mut connection, id).await
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn merge_materials_from_connection(
+    connection: &mut SqliteConnection,
+    source_id: i64,
+    target_id: i64,
+    name: &str,
+    barcode: Option<&str>,
+    unit_id: Option<i64>,
+    category: Option<&str>,
+    location_id: Option<i64>,
+    remark: Option<&str>,
+    updated_at: &str,
+) -> Result<MergeMaterialResult, String> {
+    if source_id <= 0 || target_id <= 0 || source_id == target_id {
+        return Err("要合并的物资记录无效".into());
+    }
+
+    let mut transaction = connection
+        .begin()
+        .await
+        .map_err(|e| format!("无法开始合并物资：{e}"))?;
+    let existing_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM materials WHERE id IN (?, ?)")
+            .bind(source_id)
+            .bind(target_id)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(|e| format!("无法检查待合并物资：{e}"))?;
+    if existing_count != 2 {
+        return Err("待合并的物资记录不存在，请刷新后重试".into());
+    }
+
+    // The target may already have stock in a warehouse that also contains the
+    // source material. Add both quantities before removing the source rows.
+    sqlx::query(
+        r#"INSERT INTO inventory_balances(material_id,location_id,quantity,updated_at)
+           SELECT ?,location_id,quantity,updated_at
+           FROM inventory_balances WHERE material_id=?
+           ON CONFLICT(material_id,location_id) DO UPDATE SET
+             quantity=inventory_balances.quantity+excluded.quantity,
+             updated_at=CASE WHEN excluded.updated_at>inventory_balances.updated_at
+                             THEN excluded.updated_at ELSE inventory_balances.updated_at END"#,
+    )
+    .bind(target_id)
+    .bind(source_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|e| format!("无法合并物资库存：{e}"))?;
+    sqlx::query("DELETE FROM inventory_balances WHERE material_id=?")
+        .bind(source_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|e| format!("无法清理原物资库存：{e}"))?;
+    sqlx::query("UPDATE stock_transactions SET material_id=? WHERE material_id=?")
+        .bind(target_id)
+        .bind(source_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|e| format!("无法合并物资流水：{e}"))?;
+    sqlx::query("UPDATE attachments SET entity_id=? WHERE entity_type='MATERIAL' AND entity_id=?")
+        .bind(target_id)
+        .bind(source_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|e| format!("无法合并物资附件：{e}"))?;
+    sqlx::query("DELETE FROM materials WHERE id=?")
+        .bind(source_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|e| format!("无法清理重复物资：{e}"))?;
+    let updated = sqlx::query(
+        r#"UPDATE materials
+           SET name=?,barcode=COALESCE(?,barcode),unit_id=?,category=COALESCE(?,category),
+               default_location_id=COALESCE(?,default_location_id),remark=COALESCE(?,remark),
+               status=1,updated_at=?
+           WHERE id=?"#,
+    )
+    .bind(name)
+    .bind(barcode)
+    .bind(unit_id)
+    .bind(category)
+    .bind(location_id)
+    .bind(remark)
+    .bind(updated_at)
+    .bind(target_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|e| format!("无法保存合并后的物资：{e}"))?;
+
+    transaction
+        .commit()
+        .await
+        .map_err(|e| format!("提交物资合并失败：{e}"))?;
+    Ok(MergeMaterialResult {
+        rows_affected: updated.rows_affected(),
+        last_insert_id: target_id,
+        merged: true,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn merge_materials(
+    app: AppHandle,
+    source_id: i64,
+    target_id: i64,
+    name: String,
+    barcode: Option<String>,
+    unit_id: Option<i64>,
+    category: Option<String>,
+    location_id: Option<i64>,
+    remark: Option<String>,
+    updated_at: String,
+) -> Result<MergeMaterialResult, String> {
+    let mut connection = open_connection(&app).await?;
+    merge_materials_from_connection(
+        &mut connection,
+        source_id,
+        target_id,
+        &name,
+        barcode.as_deref(),
+        unit_id,
+        category.as_deref(),
+        location_id,
+        remark.as_deref(),
+        &updated_at,
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,6 +433,94 @@ mod tests {
         .expect("check duplicate");
 
         assert!(rows.is_empty(), "an edit must not conflict with itself");
+    }
+
+    #[tokio::test]
+    async fn merges_material_after_unit_correction_without_losing_business_data() {
+        let mut connection = SqliteConnection::connect("sqlite::memory:")
+            .await
+            .expect("open database");
+        for statement in [
+            "PRAGMA foreign_keys=ON",
+            "CREATE TABLE units(id INTEGER PRIMARY KEY)",
+            "CREATE TABLE locations(id INTEGER PRIMARY KEY)",
+            "CREATE TABLE materials(id INTEGER PRIMARY KEY,name TEXT NOT NULL,barcode TEXT UNIQUE,unit_id INTEGER,category TEXT,default_location_id INTEGER,remark TEXT,status INTEGER,created_at TEXT,updated_at TEXT,FOREIGN KEY(unit_id) REFERENCES units(id),FOREIGN KEY(default_location_id) REFERENCES locations(id))",
+            "CREATE UNIQUE INDEX idx_materials_name_unit_unique ON materials(name COLLATE NOCASE,COALESCE(unit_id,-1))",
+            "CREATE TABLE inventory_balances(id INTEGER PRIMARY KEY,material_id INTEGER NOT NULL,location_id INTEGER NOT NULL,quantity REAL NOT NULL,updated_at TEXT NOT NULL,UNIQUE(material_id,location_id),FOREIGN KEY(material_id) REFERENCES materials(id),FOREIGN KEY(location_id) REFERENCES locations(id))",
+            "CREATE TABLE stock_transactions(id INTEGER PRIMARY KEY,material_id INTEGER NOT NULL,location_id INTEGER NOT NULL,FOREIGN KEY(material_id) REFERENCES materials(id),FOREIGN KEY(location_id) REFERENCES locations(id))",
+            "CREATE TABLE attachments(id INTEGER PRIMARY KEY,entity_type TEXT,entity_id INTEGER)",
+            "INSERT INTO units(id) VALUES (3),(4)",
+            "INSERT INTO locations(id) VALUES (1),(2)",
+            "INSERT INTO materials(id,name,barcode,unit_id,status,created_at,updated_at) VALUES (19,'消防工具','XF-19',3,1,'old','old'),(27,'消防工具',NULL,4,1,'old','old')",
+            "INSERT INTO inventory_balances(id,material_id,location_id,quantity,updated_at) VALUES (1,19,1,20,'1'),(2,27,1,5,'2'),(3,27,2,30,'2')",
+            "INSERT INTO stock_transactions(id,material_id,location_id) VALUES (1,19,1),(2,27,2)",
+            "INSERT INTO attachments(id,entity_type,entity_id) VALUES (1,'MATERIAL',19),(2,'MATERIAL',27)",
+        ] {
+            sqlx::query(statement)
+                .execute(&mut connection)
+                .await
+                .expect("prepare merge fixture");
+        }
+
+        let result = merge_materials_from_connection(
+            &mut connection,
+            27,
+            19,
+            "消防工具",
+            None,
+            Some(3),
+            Some("消防器材"),
+            Some(2),
+            Some("单位纠正"),
+            "new",
+        )
+        .await
+        .expect("merge material");
+
+        assert!(result.merged);
+        assert_eq!(result.last_insert_id, 19);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM materials")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap(),
+            1
+        );
+        let balances = sqlx::query_as::<_, (i64, f64)>(
+            "SELECT location_id,quantity FROM inventory_balances WHERE material_id=19 ORDER BY location_id",
+        )
+        .fetch_all(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(balances, vec![(1, 25.0), (2, 30.0)]);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM stock_transactions WHERE material_id=19",
+            )
+            .fetch_one(&mut connection)
+            .await
+            .unwrap(),
+            2
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM attachments WHERE entity_type='MATERIAL' AND entity_id=19",
+            )
+            .fetch_one(&mut connection)
+            .await
+            .unwrap(),
+            2
+        );
+        let metadata = sqlx::query_as::<_, (i64, String, String, String)>(
+            "SELECT unit_id,barcode,category,remark FROM materials WHERE id=19",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(
+            metadata,
+            (3, "XF-19".into(), "消防器材".into(), "单位纠正".into())
+        );
     }
 
     #[tokio::test]

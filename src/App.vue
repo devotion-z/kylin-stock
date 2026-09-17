@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { getVersion } from '@tauri-apps/api/app'
 import { useRoute, useRouter } from 'vue-router'
 import {
   Box,
@@ -15,6 +16,11 @@ import appIcon from './assets/app-icon.png'
 
 const route = useRoute()
 const router = useRouter()
+const appVersion = ref('')
+
+onMounted(async () => {
+  appVersion.value = await getVersion().catch(() => '')
+})
 
 const activePath = computed(() => route.path)
 
@@ -51,7 +57,7 @@ const menu = [
         </el-menu-item>
       </el-menu>
 
-      <div class="sidebar-footer">银河麒麟 V10 · 本地单机版</div>
+      <div class="sidebar-footer">银河麒麟 V10 · 本地单机版<span v-if="appVersion"> · v{{ appVersion }}</span></div>
     </el-aside>
 
     <el-container>

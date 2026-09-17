@@ -22,6 +22,12 @@ export interface Material {
   attachment_count: number
 }
 
+interface MaterialSaveResult {
+  rowsAffected: number
+  lastInsertId: number
+  merged?: boolean
+}
+
 const now = () => new Date().toISOString()
 
 export async function listUnits(): Promise<Unit[]> {
@@ -125,7 +131,7 @@ export async function saveMaterial(input: {
   category?: string
   locationId?: number | null
   remark?: string
-}) {
+}): Promise<MaterialSaveResult> {
   const normalized = {
     id: input.id,
     name: input.name.trim(),
@@ -139,32 +145,50 @@ export async function saveMaterial(input: {
 
   return withDatabaseMutation(async () => {
     const db = await getDatabase()
+    let mergeTargetId: number | undefined
 
-    // Duplicate preflight is only for a real create. An edit already has a
-    // stable primary key and must not be mistaken for a second material.
-    if (!normalized.id) {
-      const conflicts = await db.select<{ id: number; status: number }[]>(`
-        SELECT id, status
-        FROM materials
-        WHERE name = $1 COLLATE NOCASE
-          AND COALESCE(unit_id,-1) = COALESCE($2,-1)
-        LIMIT 1
-      `, [normalized.name, normalized.unitId])
-      if (conflicts.length) {
+    const conflicts = await db.select<{ id: number; status: number }[]>(`
+      SELECT id, status
+      FROM materials
+      WHERE name = $1 COLLATE NOCASE
+        AND COALESCE(unit_id,-1) = COALESCE($2,-1)
+        AND ($3 IS NULL OR id <> $3)
+      LIMIT 1
+    `, [normalized.name, normalized.unitId, normalized.id ?? null])
+    if (conflicts.length) {
+      if (!normalized.id) {
         throw new Error(conflicts[0].status === 0
           ? '同名同计量单位物资已停用，请直接重新启用原物资'
           : '同名同计量单位物资已存在；一个物资可存放在多个库房，请勿重复添加')
       }
+      mergeTargetId = Number(conflicts[0].id)
     }
 
     if (normalized.barcode) {
       const barcodeConflicts = await db.select<{ id: number }[]>(`
-        SELECT id FROM materials WHERE barcode = $1 AND ($2 IS NULL OR id <> $2) LIMIT 1
-      `, [normalized.barcode, normalized.id ?? null])
+        SELECT id FROM materials
+        WHERE barcode = $1
+          AND ($2 IS NULL OR id <> $2)
+          AND ($3 IS NULL OR id <> $3)
+        LIMIT 1
+      `, [normalized.barcode, normalized.id ?? null, mergeTargetId ?? null])
       if (barcodeConflicts.length) throw new Error('条码已被其他物资使用，请更换后再保存')
     }
 
     const timestamp = now()
+    if (normalized.id && mergeTargetId) {
+      return invoke<MaterialSaveResult>('merge_materials', {
+        sourceId: normalized.id,
+        targetId: mergeTargetId,
+        name: normalized.name,
+        barcode: normalized.barcode,
+        unitId: normalized.unitId,
+        category: normalized.category,
+        locationId: normalized.locationId,
+        remark: normalized.remark,
+        updatedAt: timestamp,
+      })
+    }
     if (normalized.id) {
       return db.execute(`UPDATE materials SET name=$1, barcode=$2, unit_id=$3, category=$4,
         default_location_id=$5, remark=$6, updated_at=$7 WHERE id=$8`, [
