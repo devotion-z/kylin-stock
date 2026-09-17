@@ -859,9 +859,19 @@ mod tests {
     }
 
     async fn balance(connection: &mut SqliteConnection) -> f64 {
+        balance_at(connection, 1, 1).await
+    }
+
+    async fn balance_at(
+        connection: &mut SqliteConnection,
+        material_id: i64,
+        location_id: i64,
+    ) -> f64 {
         sqlx::query_scalar::<_, f64>(
-            "SELECT CAST(COALESCE(quantity,0) AS REAL) FROM inventory_balances WHERE material_id=1 AND location_id=1",
+            "SELECT CAST(COALESCE(quantity,0) AS REAL) FROM inventory_balances WHERE material_id=? AND location_id=?",
         )
+        .bind(material_id)
+        .bind(location_id)
         .fetch_optional(connection)
         .await
         .expect("read balance")
@@ -1000,6 +1010,34 @@ mod tests {
         .await
         .expect("read corrected transaction");
         assert_eq!(corrected, (12.5, "修正错账".into()));
+    }
+
+    #[tokio::test]
+    async fn moving_inbound_to_another_location_updates_outbound_availability() {
+        let mut connection = test_connection().await;
+        stock_in_on_connection(&mut connection, &input(10.0))
+            .await
+            .expect("seed stock in location 1");
+        let id = sqlx::query_scalar::<_, i64>("SELECT id FROM stock_transactions LIMIT 1")
+            .fetch_one(&mut connection)
+            .await
+            .expect("read transaction id");
+        let mut correction = update_input(id, 10.0);
+        correction.location_id = 4;
+
+        update_stock_transaction_on_connection(&mut connection, &correction)
+            .await
+            .expect("move inbound to location 4");
+
+        assert_eq!(balance_at(&mut connection, 1, 1).await, 0.0);
+        assert_eq!(balance_at(&mut connection, 1, 4).await, 10.0);
+        let mut outbound = input(3.0);
+        outbound.location_id = 4;
+        outbound.destination = Some("四号库领用测试".into());
+        stock_out_on_connection(&mut connection, &outbound)
+            .await
+            .expect("outbound from corrected location succeeds");
+        assert_eq!(balance_at(&mut connection, 1, 4).await, 7.0);
     }
 
     #[tokio::test]

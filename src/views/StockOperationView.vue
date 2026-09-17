@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onActivated, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { listLocations, listMaterials, type Location, type Material } from '../services/masterData'
@@ -26,18 +26,24 @@ const scanInput = ref<{ focus: () => void }>()
 interface OperationLine { materialId?: number; locationId?: number; quantity: string }
 const lines = ref<OperationLine[]>([{ quantity: '1' }])
 const form = reactive({ occurredAt: toLocalDateValue(), adjustmentBasis: '', relatedUnit: '', handler: '', receiver: '', remark: '' })
+let loadRevision = 0
 
 async function load() {
+  const revision = ++loadRevision
   loading.value = true
   try {
-    ;[materials.value, locations.value, relatedUnitOptions.value, inventoryRows.value] = await Promise.all([
+    const [nextMaterials, nextLocations, nextRelatedUnits, nextInventory] = await Promise.all([
       listMaterials(), listLocations(), listBusinessOptions('RELATED_UNIT'), listInventory(),
     ])
-    materials.value = materials.value.filter((item) => item.status === 1)
+    if (revision !== loadRevision) return
+    materials.value = nextMaterials.filter((item) => item.status === 1)
+    locations.value = nextLocations
+    relatedUnitOptions.value = nextRelatedUnits
+    inventoryRows.value = nextInventory
   } catch (e) {
-    ElMessage.error(`基础资料加载失败：${e instanceof Error ? e.message : String(e)}`)
+    if (revision === loadRevision) ElMessage.error(`基础资料加载失败：${e instanceof Error ? e.message : String(e)}`)
   } finally {
-    loading.value = false
+    if (revision === loadRevision) loading.value = false
   }
 }
 
@@ -179,11 +185,13 @@ async function submit() {
   finally { submitting.value = false }
 }
 
-watch(() => route.path, (path) => {
-  if (path !== '/stock-in' && path !== '/stock-out') return
-  if (!submitting.value) reset()
-  void load()
-}, { immediate: true })
+watch(() => route.path, (path, previousPath) => {
+  const isOperationPath = path === '/stock-in' || path === '/stock-out'
+  const wasOperationPath = previousPath === '/stock-in' || previousPath === '/stock-out'
+  if (isOperationPath && !submitting.value) reset()
+  if (isOperationPath && wasOperationPath) void load()
+})
+onActivated(() => { void load() })
 </script>
 
 <template>

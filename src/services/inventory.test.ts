@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildLedgerWhere, sortInventoryByLocation, type InventoryRow } from './inventory'
+import { buildInventoryWhere, buildLedgerWhere, sortInventoryByLocation, type InventoryRow } from './inventory'
 
 function row(location_name: string, material_name: string): InventoryRow {
   return {
@@ -40,5 +40,18 @@ describe('buildLedgerWhere', () => {
 
   it('does not add placeholder conditions for an empty search', () => {
     expect(buildLedgerWhere({ type: 'ALL' })).toEqual({ sql: '', values: [] })
+  })
+})
+
+describe('buildInventoryWhere', () => {
+  it('uses an exact location id without sentinel OR conditions', () => {
+    const result = buildInventoryWhere({ keyword: '毛巾', unit: '发', locationId: 4 })
+    expect(result.sql).toBe("AND m.name LIKE ? AND COALESCE(u.name,'') LIKE ? AND b.location_id=?")
+    expect(result.sql).not.toContain(' OR ')
+    expect(result.values).toEqual(['%毛巾%', '%发%', 4])
+  })
+
+  it('omits location filters for the cross-location summary', () => {
+    expect(buildInventoryWhere({ locationId: 4 }, true)).toEqual({ sql: '', values: [] })
   })
 })

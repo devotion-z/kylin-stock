@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onActivated, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { deleteInventoryPosition, listInventory, transferStock, type InventoryRow } from '../services/inventory'
+import { deleteInventoryPosition, listInventory, listInventoryPage, transferStock, type InventoryFilters, type InventoryRow } from '../services/inventory'
 import { listLocations, type Location } from '../services/masterData'
 import { exportInventoryRows } from '../services/export'
 import { formatDateTime, toLocalDateValue } from '../utils/date'
@@ -14,28 +14,89 @@ const exporting = ref(false)
 const managing = ref(false)
 const operationBusy = computed(() => loading.value || exporting.value || managing.value)
 const rows = ref<InventoryRow[]>([])
+const total = ref(0)
+const currentPage = ref(1)
+const pageSize = ref(100)
 const locations = ref<Location[]>([])
-const filters = reactive({ keyword: '', unit: '', location: '' })
+const filters = reactive({ keyword: '', unit: '', locationId: undefined as number | undefined })
+const appliedFilters = ref<InventoryFilters>({ summary: !isDistribution.value })
 const transferDialogVisible = ref(false)
 const transferRow = ref<InventoryRow | null>(null)
 const transferForm = reactive({ toLocationId: undefined as number | undefined, quantity: '', occurredAt: toLocalDateValue(), adjustmentBasis: '库内调拨', handler: '', remark: '' })
+let refreshRevision = 0
 
-async function refresh() {
-  if (operationBusy.value) return
-  const query = { ...filters, location: isDistribution.value ? filters.location : '', summary: !isDistribution.value }
+function snapshotFilters(): InventoryFilters {
+  return {
+    keyword: filters.keyword,
+    unit: filters.unit,
+    locationId: isDistribution.value ? filters.locationId : undefined,
+    summary: !isDistribution.value,
+  }
+}
+
+async function refresh(recount = true) {
+  if (exporting.value || managing.value) return
+  const revision = ++refreshRevision
+  const distributionMode = isDistribution.value
+  const requestedFilters = { ...appliedFilters.value }
+  const requestedPage = currentPage.value
+  const requestedPageSize = pageSize.value
   loading.value = true
   try {
-    rows.value = await listInventory(query)
+    if (distributionMode) {
+      let result = await listInventoryPage(
+        requestedFilters,
+        requestedPage,
+        requestedPageSize,
+        recount ? undefined : total.value,
+      )
+      if (revision !== refreshRevision) return
+      const lastPage = Math.max(1, Math.ceil(result.total / requestedPageSize))
+      if (requestedPage > lastPage) {
+        result = await listInventoryPage(requestedFilters, lastPage, requestedPageSize, result.total)
+        if (revision !== refreshRevision) return
+        currentPage.value = lastPage
+      }
+      rows.value = result.rows
+      total.value = result.total
+    } else {
+      const result = await listInventory(requestedFilters)
+      if (revision !== refreshRevision) return
+      rows.value = result
+      total.value = result.length
+    }
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : String(e))
+    if (revision === refreshRevision) ElMessage.error(e instanceof Error ? e.message : String(e))
   } finally {
-    loading.value = false
+    if (revision === refreshRevision) loading.value = false
   }
 }
 
 function reset() {
   if (operationBusy.value) return
-  Object.assign(filters, { keyword: '', unit: '', location: '' })
+  Object.assign(filters, { keyword: '', unit: '', locationId: undefined })
+  appliedFilters.value = snapshotFilters()
+  currentPage.value = 1
+  refresh()
+}
+
+function query() {
+  if (operationBusy.value) return
+  appliedFilters.value = snapshotFilters()
+  currentPage.value = 1
+  refresh()
+}
+
+function changePage(page: number) {
+  if (operationBusy.value) return
+  currentPage.value = page
+  refresh(false)
+}
+
+function changePageSize(size: number) {
+  if (operationBusy.value) return
+  pageSize.value = size
+  currentPage.value = 1
   refresh()
 }
 
@@ -43,9 +104,10 @@ async function exportCurrent() {
   if (operationBusy.value) return
   if (!rows.value.length) return ElMessage.warning('当前没有可导出的库存数据')
 
-  const exportRows = rows.value.slice()
   exporting.value = true
   try {
+    const exportRows = await listInventory(appliedFilters.value)
+    if (!exportRows.length) return ElMessage.warning('当前没有可导出的库存数据')
     const path = await exportInventoryRows(exportRows, isDistribution.value)
     if (path) ElMessage.success(`库存物资分布已导出（${exportRows.length} 条）`)
   } catch (e) {
@@ -100,29 +162,40 @@ function handleManage(command: string, row: InventoryRow) {
   else if (command === 'clear') clearInventory(row)
 }
 
-onMounted(async () => { await Promise.all([refresh(), listLocations().then(value => { locations.value = value }).catch(() => undefined)]) })
-watch(isDistribution, () => {
-  filters.location = ''
-  refresh()
+onActivated(async () => {
+  if (!locations.value.length) {
+    try { locations.value = await listLocations() }
+    catch { /* The inventory query below still remains usable without the location dropdown. */ }
+  }
+  await refresh()
+})
+watch(() => route.path, (path, previousPath) => {
+  const isInventoryPath = path === '/inventory' || path === '/distribution'
+  const wasInventoryPath = previousPath === '/inventory' || previousPath === '/distribution'
+  if (!isInventoryPath || !wasInventoryPath) return
+  filters.locationId = undefined
+  appliedFilters.value = snapshotFilters()
+  currentPage.value = 1
+  void refresh()
 })
 </script>
 
 <template>
   <el-card shadow="never">
     <div class="toolbar">
-      <el-input v-model="filters.keyword" :disabled="operationBusy" clearable placeholder="物资名称" style="width:220px" @keyup.enter="refresh" />
-      <el-input v-model="filters.unit" :disabled="operationBusy" clearable placeholder="计量单位" style="width:150px" @keyup.enter="refresh" />
-      <el-select v-if="isDistribution" v-model="filters.location" :disabled="operationBusy" clearable filterable placeholder="存放位置" style="width:180px">
-        <el-option v-for="item in locations" :key="item.id" :label="item.name" :value="item.name" />
+      <el-input v-model="filters.keyword" :disabled="operationBusy" clearable placeholder="物资名称" style="width:220px" @keyup.enter="query" />
+      <el-input v-model="filters.unit" :disabled="operationBusy" clearable placeholder="计量单位" style="width:150px" @keyup.enter="query" />
+      <el-select v-if="isDistribution" v-model="filters.locationId" :disabled="operationBusy" clearable filterable placeholder="存放位置" style="width:180px">
+        <el-option v-for="item in locations" :key="item.id" :label="item.name" :value="item.id" />
       </el-select>
-      <el-button type="primary" :loading="loading" :disabled="operationBusy" @click="refresh">查询</el-button>
+      <el-button type="primary" :loading="loading" :disabled="operationBusy" @click="query">查询</el-button>
       <el-button :disabled="operationBusy" @click="reset">重置</el-button>
       <el-button type="success" :loading="exporting" :disabled="operationBusy || !rows.length" @click="exportCurrent">
-        导出当前结果（{{ rows.length }}）
+        导出当前结果（{{ total }}）
       </el-button>
     </div>
 
-    <el-table v-loading="loading" :data="rows" border stripe empty-text="暂无库存">
+    <el-table v-loading="loading" :data="rows" :height="isDistribution ? 'calc(100vh - 300px)' : undefined" border stripe scrollbar-always-on empty-text="暂无库存">
       <el-table-column prop="material_name" label="物资名称" min-width="180" />
       <el-table-column prop="unit_name" label="单位" width="100" />
       <el-table-column prop="quantity" label="当前库存" width="140" />
@@ -142,6 +215,18 @@ watch(isDistribution, () => {
         </template>
       </el-table-column>
     </el-table>
+    <div v-if="isDistribution" class="pagination-bar">
+      <el-pagination
+        :current-page="currentPage"
+        :page-size="pageSize"
+        :page-sizes="[100, 200, 500]"
+        :total="total"
+        :disabled="operationBusy"
+        layout="total, sizes, prev, pager, next, jumper"
+        @current-change="changePage"
+        @size-change="changePageSize"
+      />
+    </div>
   </el-card>
 
   <el-dialog v-model="transferDialogVisible" title="库内转移" width="520px" :close-on-click-modal="!managing" :close-on-press-escape="!managing">
@@ -160,4 +245,5 @@ watch(isDistribution, () => {
 
 <style scoped>
 .toolbar { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:18px; align-items:center; }
+.pagination-bar { display:flex; justify-content:flex-end; padding-top:14px; }
 </style>

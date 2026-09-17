@@ -3,7 +3,7 @@ use std::{fs, path::PathBuf, str::FromStr, time::Duration};
 use tauri::AppHandle;
 
 const DATABASE_FILE: &str = "kylin-stock.db";
-pub(crate) const LATEST_SCHEMA_VERSION: i64 = 8;
+pub(crate) const LATEST_SCHEMA_VERSION: i64 = 9;
 
 struct Migration {
     version: i64,
@@ -207,6 +207,12 @@ const MIGRATIONS: &[Migration] = &[
             "DROP TABLE IF EXISTS temp.material_merge_map",
         ],
     },
+    Migration {
+        version: 9,
+        statements: &[
+            "CREATE INDEX IF NOT EXISTS idx_inventory_location_material ON inventory_balances(location_id,material_id)",
+        ],
+    },
 ];
 
 fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -373,6 +379,7 @@ mod tests {
             "idx_transactions_material_occurred_id",
             "idx_transactions_type_occurred_id",
             "idx_materials_name_unit_unique",
+            "idx_inventory_location_material",
         ] {
             let count = sqlx::query_scalar::<_, i64>(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?",
@@ -413,6 +420,29 @@ mod tests {
             .join(" ");
         assert!(
             detail.contains("idx_transactions_material_occurred_id"),
+            "{detail}"
+        );
+    }
+
+    #[tokio::test]
+    async fn distribution_query_uses_location_index() {
+        let mut connection = memory_database().await;
+        run_migrations_on_connection(&mut connection)
+            .await
+            .expect("create current schema");
+        let plan = sqlx::query(
+            "EXPLAIN QUERY PLAN SELECT material_id FROM inventory_balances WHERE location_id=1 AND quantity<>0 LIMIT 100",
+        )
+        .fetch_all(&mut connection)
+        .await
+        .expect("explain distribution page");
+        let detail = plan
+            .iter()
+            .map(|row| row.get::<String, _>("detail"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            detail.contains("idx_inventory_location_material"),
             "{detail}"
         );
     }

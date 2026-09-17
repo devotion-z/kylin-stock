@@ -35,7 +35,15 @@ export interface InventoryFilters {
   keyword?: string
   unit?: string
   location?: string
+  locationId?: number
   summary?: boolean
+}
+
+export interface InventoryPage {
+  rows: InventoryRow[]
+  total: number
+  page: number
+  pageSize: number
 }
 
 export interface LedgerFilters {
@@ -166,6 +174,32 @@ export function sortInventoryByLocation(rows: InventoryRow[]) {
     || collator.compare(left.material_name, right.material_name))
 }
 
+export function buildInventoryWhere(filters: InventoryFilters, summary = false) {
+  const clauses: string[] = []
+  const values: unknown[] = []
+  const add = (sql: string, value: unknown) => {
+    clauses.push(sql)
+    values.push(value)
+  }
+  if (filters.keyword?.trim()) add('m.name LIKE ?', `%${filters.keyword.trim()}%`)
+  if (filters.unit?.trim()) add("COALESCE(u.name,'') LIKE ?", `%${filters.unit.trim()}%`)
+  if (!summary && Number(filters.locationId) > 0) add('b.location_id=?', Number(filters.locationId))
+  else if (!summary && filters.location?.trim()) add('l.name LIKE ?', `%${filters.location.trim()}%`)
+  return { sql: clauses.length ? `AND ${clauses.join(' AND ')}` : '', values }
+}
+
+const distributionColumnsSql = `
+  SELECT b.material_id, m.name AS material_name, u.name AS unit_name,
+         b.location_id, l.name AS location_name, CAST(b.quantity AS REAL) AS quantity, b.updated_at`
+const distributionFromSql = `
+  FROM inventory_balances b
+  JOIN materials m ON m.id=b.material_id
+  LEFT JOIN units u ON u.id=m.unit_id
+  JOIN locations l ON l.id=b.location_id`
+const distributionOrderSql = `
+  ORDER BY CASE WHEN l.name GLOB '[0-9]*' THEN CAST(l.name AS INTEGER) ELSE 2147483647 END,
+           l.name COLLATE NOCASE, m.name COLLATE NOCASE`
+
 export async function getTransactionIdByNo(transactionNo: string): Promise<number> {
   return withDatabaseAccess(async () => {
     const rows = await (await getDatabase()).select<{ id: number }[]>(
@@ -179,13 +213,11 @@ export async function getTransactionIdByNo(transactionNo: string): Promise<numbe
 
 export async function listInventory(filters: InventoryFilters | string = {}): Promise<InventoryRow[]> {
   const normalized: InventoryFilters = typeof filters === 'string' ? { keyword: filters } : filters
-  const keyword = `%${(normalized.keyword ?? '').trim()}%`
-  const unit = `%${(normalized.unit ?? '').trim()}%`
-  const location = `%${(normalized.location ?? '').trim()}%`
 
   return withDatabaseAccess(async () => {
     const db = await getDatabase()
     if (normalized.summary) {
+      const where = buildInventoryWhere(normalized, true)
       return db.select<InventoryRow[]>(`
         SELECT MIN(b.material_id) AS material_id, m.name AS material_name, u.name AS unit_name,
                0 AS location_id, '' AS location_name,
@@ -193,27 +225,50 @@ export async function listInventory(filters: InventoryFilters | string = {}): Pr
         FROM inventory_balances b
         JOIN materials m ON m.id=b.material_id
         LEFT JOIN units u ON u.id=m.unit_id
-        WHERE ($1='%%' OR m.name LIKE $1)
-          AND ($2='%%' OR COALESCE(u.name,'') LIKE $2)
+        WHERE 1=1 ${where.sql}
         GROUP BY m.name COLLATE NOCASE, COALESCE(u.name,'') COLLATE NOCASE
         HAVING SUM(b.quantity) <> 0
-        ORDER BY m.name COLLATE NOCASE, COALESCE(u.name,'') COLLATE NOCASE`, [keyword, unit])
+        ORDER BY m.name COLLATE NOCASE, COALESCE(u.name,'') COLLATE NOCASE`, where.values)
     }
 
-    const rows = await db.select<InventoryRow[]>(`
-      SELECT b.material_id, m.name AS material_name, u.name AS unit_name,
-             b.location_id, l.name AS location_name, b.quantity, b.updated_at
-      FROM inventory_balances b
-      JOIN materials m ON m.id=b.material_id
-      LEFT JOIN units u ON u.id=m.unit_id
-      JOIN locations l ON l.id=b.location_id
-      WHERE b.quantity <> 0
-        AND ($1='%%' OR m.name LIKE $1)
-        AND ($2='%%' OR COALESCE(u.name,'') LIKE $2)
-        AND ($3='%%' OR l.name LIKE $3)
-      ORDER BY l.name COLLATE NOCASE, m.name COLLATE NOCASE`, [keyword, unit, location])
+    const where = buildInventoryWhere(normalized)
+    const rows = await db.select<InventoryRow[]>(`${distributionColumnsSql}
+      ${distributionFromSql}
+      WHERE b.quantity<>0 ${where.sql}
+      ${distributionOrderSql}`, where.values)
 
     return sortInventoryByLocation(rows)
+  })
+}
+
+export async function listInventoryPage(
+  filters: InventoryFilters = {},
+  page = 1,
+  pageSize = 100,
+  knownTotal?: number,
+): Promise<InventoryPage> {
+  const safePage = Math.max(1, Math.trunc(page) || 1)
+  const safePageSize = [100, 200, 500].includes(pageSize) ? pageSize : 100
+  const offset = (safePage - 1) * safePageSize
+  const where = buildInventoryWhere(filters)
+
+  return withDatabaseAccess(async () => {
+    const db = await getDatabase()
+    const rowQuery = `${distributionColumnsSql}
+      ${distributionFromSql}
+      WHERE b.quantity<>0 ${where.sql}
+      ${distributionOrderSql}
+      LIMIT ? OFFSET ?`
+    if (knownTotal !== undefined) {
+      const rows = await db.select<InventoryRow[]>(rowQuery, [...where.values, safePageSize, offset])
+      return { rows, total: knownTotal, page: safePage, pageSize: safePageSize }
+    }
+    const [rows, counts] = await Promise.all([
+      db.select<InventoryRow[]>(rowQuery, [...where.values, safePageSize, offset]),
+      db.select<{ total: number }[]>(`SELECT COUNT(*) AS total ${distributionFromSql}
+        WHERE b.quantity<>0 ${where.sql}`, where.values),
+    ])
+    return { rows, total: Number(counts[0]?.total ?? 0), page: safePage, pageSize: safePageSize }
   })
 }
 
