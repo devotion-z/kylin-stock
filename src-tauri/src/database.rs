@@ -271,6 +271,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn material_duplicate_check_excludes_the_row_being_edited() {
+        let mut connection = SqliteConnection::connect("sqlite::memory:")
+            .await
+            .expect("open database");
+        sqlx::query("CREATE TABLE materials(id INTEGER PRIMARY KEY,name TEXT,unit_id INTEGER,status INTEGER)")
+            .execute(&mut connection)
+            .await
+            .expect("create materials");
+        sqlx::query("INSERT INTO materials(id,name,unit_id,status) VALUES (27,'毛巾',3,1)")
+            .execute(&mut connection)
+            .await
+            .expect("seed material");
+
+        let rows = bind_values(
+            sqlx::query(
+                "SELECT id,status FROM materials WHERE name=$1 COLLATE NOCASE AND COALESCE(unit_id,-1)=COALESCE($3,-1) AND ($2 IS NULL OR id<>$2) LIMIT 1",
+            ),
+            vec![Value::String("毛巾".into()), Value::from(27), Value::from(3)],
+        )
+        .fetch_all(&mut connection)
+        .await
+        .expect("check duplicate");
+
+        assert!(rows.is_empty(), "an edit must not conflict with itself");
+    }
+
+    #[tokio::test]
     async fn deletes_location_after_cleaning_default_and_zero_balance_references() {
         let mut connection = SqliteConnection::connect("sqlite::memory:")
             .await

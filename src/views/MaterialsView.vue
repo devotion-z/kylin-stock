@@ -20,6 +20,7 @@ const dialogTitle = ref('新增物资')
 const attachments = ref<Attachment[]>([])
 const pendingAttachments = ref<string[]>([])
 const form = reactive({ id: undefined as number | undefined, name: '', barcode: '', unitId: undefined as MasterDataChoice, category: '', locationId: undefined as MasterDataChoice, remark: '' })
+const editingMaterialId = ref<number | undefined>()
 const masterDialogVisible = ref(false)
 const masterTab = ref<'locations' | 'units' | 'related'>('locations')
 const relatedUnits = ref<BusinessOption[]>([])
@@ -49,6 +50,7 @@ function resetSearch() {
 
 function openCreate() {
   if (operationBusy.value) return
+  editingMaterialId.value = undefined
   Object.assign(form, { id: undefined, name: '', barcode: '', unitId: undefined, category: '', locationId: undefined, remark: '' })
   dialogTitle.value = '新增物资'
   attachments.value = []
@@ -58,7 +60,8 @@ function openCreate() {
 
 async function openEdit(row: Material) {
   if (operationBusy.value) return
-  Object.assign(form, { id: row.id, name: row.name, barcode: row.barcode ?? '', unitId: row.unit_id ?? undefined, category: row.category ?? '', locationId: row.default_location_id ?? undefined, remark: row.remark ?? '' })
+  editingMaterialId.value = Number(row.id)
+  Object.assign(form, { id: editingMaterialId.value, name: row.name, barcode: row.barcode ?? '', unitId: row.unit_id ?? undefined, category: row.category ?? '', locationId: row.default_location_id ?? undefined, remark: row.remark ?? '' })
   dialogTitle.value = '编辑物资'
   pendingAttachments.value = []
   dialogVisible.value = true
@@ -77,8 +80,8 @@ async function submit() {
   try {
     const unitId = await resolveUnitChoice(form.unitId, units.value)
     const locationId = await resolveLocationChoice(form.locationId, locations.value)
-    const result = await saveMaterial({ ...form, unitId, locationId })
-    const materialId = form.id ?? Number(result.lastInsertId)
+    const result = await saveMaterial({ ...form, id: editingMaterialId.value, unitId, locationId })
+    const materialId = editingMaterialId.value ?? Number(result.lastInsertId)
     form.id = materialId
     while (pendingAttachments.value.length) {
       const saved = await addAttachment('MATERIAL', materialId, pendingAttachments.value[0])

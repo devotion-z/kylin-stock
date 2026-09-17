@@ -140,21 +140,21 @@ export async function saveMaterial(input: {
   return withDatabaseMutation(async () => {
     const db = await getDatabase()
 
-    // A material can have balances in many locations; its default location is
-    // not part of its identity. Keep one master row per name + unit so stock
-    // cannot be split across visually identical dropdown entries.
-    const conflicts = await db.select<{ id: number; status: number }[]>(`
-      SELECT id, status
-      FROM materials
-      WHERE name = $1 COLLATE NOCASE
-        AND COALESCE(unit_id,-1) = COALESCE($3,-1)
-        AND ($2 IS NULL OR id <> $2)
+    // Duplicate preflight is only for a real create. An edit already has a
+    // stable primary key and must not be mistaken for a second material.
+    if (!normalized.id) {
+      const conflicts = await db.select<{ id: number; status: number }[]>(`
+        SELECT id, status
+        FROM materials
+        WHERE name = $1 COLLATE NOCASE
+          AND COALESCE(unit_id,-1) = COALESCE($2,-1)
         LIMIT 1
-    `, [normalized.name, normalized.id ?? null, normalized.unitId])
-    if (conflicts.length) {
-      throw new Error(conflicts[0].status === 0
-        ? '同名同计量单位物资已停用，请直接重新启用原物资'
-        : '同名同计量单位物资已存在；一个物资可存放在多个库房，请勿重复添加')
+      `, [normalized.name, normalized.unitId])
+      if (conflicts.length) {
+        throw new Error(conflicts[0].status === 0
+          ? '同名同计量单位物资已停用，请直接重新启用原物资'
+          : '同名同计量单位物资已存在；一个物资可存放在多个库房，请勿重复添加')
+      }
     }
 
     if (normalized.barcode) {
