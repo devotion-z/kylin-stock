@@ -3,7 +3,7 @@ import { computed, onActivated, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { deleteInventoryPosition, listInventory, listInventoryPage, transferStock, type InventoryFilters, type InventoryRow } from '../services/inventory'
-import { listLocations, type Location } from '../services/masterData'
+import { listLocations, listMaterialOptions, type Location, type MaterialOption } from '../services/masterData'
 import { exportInventoryRows } from '../services/export'
 import { formatDateTime, toLocalDateValue } from '../utils/date'
 
@@ -18,6 +18,7 @@ const total = ref(0)
 const currentPage = ref(1)
 const pageSize = ref(100)
 const locations = ref<Location[]>([])
+const materialOptions = ref<MaterialOption[]>([])
 const filters = reactive({ keyword: '', unit: '', locationId: undefined as number | undefined })
 const appliedFilters = ref<InventoryFilters>({ summary: !isDistribution.value })
 const transferDialogVisible = ref(false)
@@ -162,12 +163,18 @@ function handleManage(command: string, row: InventoryRow) {
   else if (command === 'clear') clearInventory(row)
 }
 
-onActivated(async () => {
+onActivated(() => {
+  void refresh()
   if (!locations.value.length) {
-    try { locations.value = await listLocations() }
-    catch { /* The inventory query below still remains usable without the location dropdown. */ }
+    void listLocations()
+      .then(value => { locations.value = value })
+      .catch(() => undefined)
   }
-  await refresh()
+  if (!materialOptions.value.length) {
+    void listMaterialOptions()
+      .then(value => { materialOptions.value = value })
+      .catch(() => undefined)
+  }
 })
 watch(() => route.path, (path, previousPath) => {
   const isInventoryPath = path === '/inventory' || path === '/distribution'
@@ -183,7 +190,9 @@ watch(() => route.path, (path, previousPath) => {
 <template>
   <el-card shadow="never">
     <div class="toolbar">
-      <el-input v-model="filters.keyword" :disabled="operationBusy" clearable placeholder="物资名称" style="width:220px" @keyup.enter="query" />
+      <el-select v-model="filters.keyword" :disabled="operationBusy" clearable filterable placeholder="输入或选择物资名称" style="width:220px" @change="query">
+        <el-option v-for="item in materialOptions" :key="item.id" :label="item.name" :value="item.name" />
+      </el-select>
       <el-input v-model="filters.unit" :disabled="operationBusy" clearable placeholder="计量单位" style="width:150px" @keyup.enter="query" />
       <el-select v-if="isDistribution" v-model="filters.locationId" :disabled="operationBusy" clearable filterable placeholder="存放位置" style="width:180px">
         <el-option v-for="item in locations" :key="item.id" :label="item.name" :value="item.id" />

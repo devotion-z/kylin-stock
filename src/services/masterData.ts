@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/tauri'
-import { getDatabase, withDatabaseAccess, withDatabaseMutation } from './database'
+import { getDatabase, withDatabaseMutation, withDatabaseRead } from './database'
 
 export interface Unit { id: number; name: string; status: number }
 export interface Location { id: number; name: string; remark: string | null; status: number }
@@ -25,7 +25,7 @@ export interface Material {
 const now = () => new Date().toISOString()
 
 export async function listUnits(): Promise<Unit[]> {
-  return withDatabaseAccess(async () =>
+  return withDatabaseRead(async () =>
     (await getDatabase()).select<Unit[]>('SELECT id, name, status FROM units WHERE status = 1 ORDER BY name'),
   )
 }
@@ -57,7 +57,7 @@ export function resolveUnitChoice(choice: MasterDataChoice, units: Unit[]) {
 }
 
 export async function listLocations(): Promise<Location[]> {
-  return withDatabaseAccess(async () => {
+  return withDatabaseRead(async () => {
     const rows = await (await getDatabase()).select<Location[]>('SELECT id, name, remark, status FROM locations WHERE status = 1 ORDER BY name')
     const collator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' })
     return rows.sort((left, right) => collator.compare(left.name, right.name))
@@ -94,7 +94,7 @@ export async function resolveLocationChoice(choice: MasterDataChoice, locations:
 
 export async function listMaterials(keyword = ''): Promise<Material[]> {
   const q = `%${keyword.trim()}%`
-  return withDatabaseAccess(async () =>
+  return withDatabaseRead(async () =>
     (await getDatabase()).select<Material[]>(`
       SELECT m.id, m.name, m.barcode, m.unit_id, u.name AS unit_name, m.category,
              m.default_location_id, l.name AS location_name, m.remark,
@@ -110,7 +110,7 @@ export async function listMaterials(keyword = ''): Promise<Material[]> {
 }
 
 export async function listMaterialOptions(): Promise<MaterialOption[]> {
-  return withDatabaseAccess(async () =>
+  return withDatabaseRead(async () =>
     (await getDatabase()).select<MaterialOption[]>(
       'SELECT id, name FROM materials WHERE status=1 ORDER BY name COLLATE NOCASE',
     ),

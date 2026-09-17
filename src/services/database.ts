@@ -23,7 +23,49 @@ class NativeDatabase {
 
 let database: NativeDatabase | null = null
 let initialization: Promise<NativeDatabase> | null = null
-let accessTail: Promise<void> = Promise.resolve()
+type AccessKind = 'read' | 'write'
+interface AccessWaiter { kind: AccessKind; grant: (release: () => void) => void }
+const accessQueue: AccessWaiter[] = []
+let activeReaders = 0
+let writerActive = false
+let databaseRevision = 0
+
+function drainAccessQueue() {
+  if (writerActive) return
+  if (activeReaders > 0 && accessQueue[0]?.kind === 'write') return
+
+  if (activeReaders === 0 && accessQueue[0]?.kind === 'write') {
+    writerActive = true
+    const waiter = accessQueue.shift()!
+    let released = false
+    waiter.grant(() => {
+      if (released) return
+      released = true
+      writerActive = false
+      drainAccessQueue()
+    })
+    return
+  }
+
+  while (accessQueue[0]?.kind === 'read' && !writerActive) {
+    const waiter = accessQueue.shift()!
+    activeReaders += 1
+    let released = false
+    waiter.grant(() => {
+      if (released) return
+      released = true
+      activeReaders -= 1
+      drainAccessQueue()
+    })
+  }
+}
+
+function acquireDatabaseAccess(kind: AccessKind): Promise<() => void> {
+  return new Promise((grant) => {
+    accessQueue.push({ kind, grant })
+    drainAccessQueue()
+  })
+}
 
 export async function initializeDatabase() {
   if (database) return database
@@ -58,10 +100,8 @@ export async function getDatabase() {
 }
 
 /**
- * Serialize application-level SQLite access within the single KylinStock
- * webview process. The workload is a single-user desktop application, so the
- * negligible serialization cost is preferable to allowing a query to race a
- * restore that closes and replaces the live database file.
+ * Exclusive access for writes, backup and restore. New writes are fair: once
+ * queued, later reads wait behind them, while already-running reads finish.
  *
  * A caller may execute several SQL statements (including Promise.all reads)
  * while it owns one access turn. Stock/master-data writes, user backups and the
@@ -72,12 +112,7 @@ export async function getDatabase() {
  * owning operation should call getDatabase() directly.
  */
 export async function withDatabaseAccess<T>(operation: () => Promise<T>): Promise<T> {
-  let release!: () => void
-  const turn = new Promise<void>((resolve) => { release = resolve })
-  const previous = accessTail
-  accessTail = turn
-
-  await previous
+  const release = await acquireDatabaseAccess('write')
   try {
     return await operation()
   } finally {
@@ -85,8 +120,23 @@ export async function withDatabaseAccess<T>(operation: () => Promise<T>): Promis
   }
 }
 
-export function withDatabaseMutation<T>(operation: () => Promise<T>): Promise<T> {
-  return withDatabaseAccess(operation)
+export async function withDatabaseRead<T>(operation: () => Promise<T>): Promise<T> {
+  const release = await acquireDatabaseAccess('read')
+  try {
+    return await operation()
+  } finally {
+    release()
+  }
+}
+
+export async function withDatabaseMutation<T>(operation: () => Promise<T>): Promise<T> {
+  const result = await withDatabaseAccess(operation)
+  databaseRevision += 1
+  return result
+}
+
+export function getDatabaseRevision() {
+  return databaseRevision
 }
 
 export async function closeDatabase() {

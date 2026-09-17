@@ -1,4 +1,4 @@
-import { getDatabase, withDatabaseAccess, withDatabaseMutation } from './database'
+import { getDatabase, withDatabaseMutation, withDatabaseRead } from './database'
 
 export type BusinessOptionKind = 'RELATED_UNIT' | 'DESTINATION'
 
@@ -9,7 +9,7 @@ export interface BusinessOption {
 }
 
 export function listBusinessOptions(kind: BusinessOptionKind): Promise<BusinessOption[]> {
-  return withDatabaseAccess(async () =>
+  return withDatabaseRead(async () =>
     (await getDatabase()).select<BusinessOption[]>(
       'SELECT id,kind,name FROM business_options WHERE kind=$1 AND status=1 ORDER BY name',
       [kind],

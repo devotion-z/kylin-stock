@@ -1,6 +1,6 @@
 import { open } from '@tauri-apps/api/dialog'
 import { invoke } from '@tauri-apps/api/tauri'
-import { withDatabaseAccess, withDatabaseMutation } from './database'
+import { withDatabaseMutation, withDatabaseRead } from './database'
 
 export type AttachmentEntityType = 'MATERIAL' | 'TRANSACTION'
 
@@ -35,7 +35,7 @@ export function normalizeNativePath(value: string) {
 }
 
 export function listAttachments(entityType: AttachmentEntityType, entityId: number) {
-  return withDatabaseAccess(() => invoke<Attachment[]>('list_attachments', { entityType, entityId }))
+  return withDatabaseRead(() => invoke<Attachment[]>('list_attachments', { entityType, entityId }))
 }
 
 export function addAttachment(entityType: AttachmentEntityType, entityId: number, sourcePath: string) {
@@ -47,12 +47,12 @@ export function deleteAttachment(id: number) {
 }
 
 export async function getAttachmentDataUrl(id: number) {
-  const result = await withDatabaseAccess(() => invoke<{ mimeType: string; data: string }>('get_attachment_data', { id }))
+  const result = await withDatabaseRead(() => invoke<{ mimeType: string; data: string }>('get_attachment_data', { id }))
   return `data:${result.mimeType};base64,${result.data}`
 }
 
 export function openAttachmentExternal(id: number) {
-  return withDatabaseAccess(() => invoke<void>('open_attachment_external', { id }))
+  return withDatabaseRead(() => invoke<void>('open_attachment_external', { id }))
 }
 
 export function fileNameFromPath(path: string) {

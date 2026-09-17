@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/tauri'
 import { open } from '@tauri-apps/api/dialog'
 import { join } from '@tauri-apps/api/path'
-import { checkDatabaseIntegrity, closeDatabase, getDatabase, reopenDatabase, withDatabaseAccess, withDatabaseMutation } from './database'
+import { checkDatabaseIntegrity, closeDatabase, getDatabase, reopenDatabase, withDatabaseMutation, withDatabaseRead } from './database'
 
 export type BackupType = 'MANUAL' | 'ANNUAL'
 
@@ -125,7 +125,7 @@ async function rollbackFailedRestore(
 }
 
 export async function listBackupRecords(): Promise<BackupRecord[]> {
-  return withDatabaseAccess(async () =>
+  return withDatabaseRead(async () =>
     (await getDatabase()).select<BackupRecord[]>(`
       SELECT id,file_name,file_path,backup_type,backup_year,file_size,created_at,remark
       FROM backup_records

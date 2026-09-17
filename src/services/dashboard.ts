@@ -1,4 +1,4 @@
-import { getDatabase, withDatabaseAccess } from './database'
+import { getDatabase, withDatabaseRead } from './database'
 import { localDayIsoRange } from '../utils/date'
 
 export interface DashboardStats {
@@ -42,7 +42,7 @@ export interface CategoryInventoryRow {
 
 export async function listCategoryInventory(category: string): Promise<CategoryInventoryRow[]> {
   const value = category.trim() || '未分类'
-  return withDatabaseAccess(async () =>
+  return withDatabaseRead(async () =>
     (await getDatabase()).select<CategoryInventoryRow[]>(`
       SELECT m.id AS material_id,m.name AS material_name,u.name AS unit_name,
              COALESCE(l.name,dl.name,'未设置') AS location_name,
@@ -60,7 +60,7 @@ export async function listCategoryInventory(category: string): Promise<CategoryI
 }
 
 export async function loadDashboard() {
-  return withDatabaseAccess(async () => {
+  return withDatabaseRead(async () => {
     const db = await getDatabase()
     const { start, end } = localDayIsoRange()
 

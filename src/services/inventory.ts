@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/tauri'
-import { getDatabase, withDatabaseAccess, withDatabaseMutation } from './database'
+import { getDatabase, getDatabaseRevision, withDatabaseMutation, withDatabaseRead } from './database'
 
 export interface InventoryRow {
   material_id: number
@@ -199,9 +199,11 @@ const distributionFromSql = `
 const distributionOrderSql = `
   ORDER BY CASE WHEN l.name GLOB '[0-9]*' THEN CAST(l.name AS INTEGER) ELSE 2147483647 END,
            l.name COLLATE NOCASE, m.name COLLATE NOCASE`
+const inventoryPageCache = new Map<string, InventoryPage>()
+let inventoryPageCacheRevision = -1
 
 export async function getTransactionIdByNo(transactionNo: string): Promise<number> {
-  return withDatabaseAccess(async () => {
+  return withDatabaseRead(async () => {
     const rows = await (await getDatabase()).select<{ id: number }[]>(
       'SELECT id FROM stock_transactions WHERE transaction_no=$1 LIMIT 1',
       [transactionNo],
@@ -214,7 +216,7 @@ export async function getTransactionIdByNo(transactionNo: string): Promise<numbe
 export async function listInventory(filters: InventoryFilters | string = {}): Promise<InventoryRow[]> {
   const normalized: InventoryFilters = typeof filters === 'string' ? { keyword: filters } : filters
 
-  return withDatabaseAccess(async () => {
+  return withDatabaseRead(async () => {
     const db = await getDatabase()
     if (normalized.summary) {
       const where = buildInventoryWhere(normalized, true)
@@ -249,27 +251,30 @@ export async function listInventoryPage(
 ): Promise<InventoryPage> {
   const safePage = Math.max(1, Math.trunc(page) || 1)
   const safePageSize = [100, 200, 500].includes(pageSize) ? pageSize : 100
-  const offset = (safePage - 1) * safePageSize
-  const where = buildInventoryWhere(filters)
+  const revision = getDatabaseRevision()
+  if (revision !== inventoryPageCacheRevision) {
+    inventoryPageCache.clear()
+    inventoryPageCacheRevision = revision
+  }
+  const input = {
+    keyword: filters.keyword?.trim() || undefined,
+    unit: filters.unit?.trim() || undefined,
+    locationId: Number(filters.locationId) > 0 ? Number(filters.locationId) : undefined,
+    page: safePage,
+    pageSize: safePageSize,
+    knownTotal,
+  }
+  const key = JSON.stringify(input)
+  const cached = inventoryPageCache.get(key)
+  if (cached) return cached
 
-  return withDatabaseAccess(async () => {
-    const db = await getDatabase()
-    const rowQuery = `${distributionColumnsSql}
-      ${distributionFromSql}
-      WHERE b.quantity<>0 ${where.sql}
-      ${distributionOrderSql}
-      LIMIT ? OFFSET ?`
-    if (knownTotal !== undefined) {
-      const rows = await db.select<InventoryRow[]>(rowQuery, [...where.values, safePageSize, offset])
-      return { rows, total: knownTotal, page: safePage, pageSize: safePageSize }
-    }
-    const [rows, counts] = await Promise.all([
-      db.select<InventoryRow[]>(rowQuery, [...where.values, safePageSize, offset]),
-      db.select<{ total: number }[]>(`SELECT COUNT(*) AS total ${distributionFromSql}
-        WHERE b.quantity<>0 ${where.sql}`, where.values),
-    ])
-    return { rows, total: Number(counts[0]?.total ?? 0), page: safePage, pageSize: safePageSize }
-  })
+  const result = await withDatabaseRead(() => invoke<InventoryPage>('list_inventory_page', { input }))
+  if (revision === getDatabaseRevision()) inventoryPageCache.set(key, result)
+  return result
+}
+
+export async function preloadInventoryDistribution() {
+  await listInventoryPage({}, 1, 100)
 }
 
 export function buildLedgerWhere(filters: LedgerFilters = {}) {
@@ -313,7 +318,7 @@ export async function listLedgerPage(
   const where = buildLedgerWhere(filters)
   const offset = (safePage - 1) * safePageSize
 
-  return withDatabaseAccess(async () => {
+  return withDatabaseRead(async () => {
     const db = await getDatabase()
     const rowQuery = `${ledgerColumnsSql},
       (SELECT COUNT(*) FROM attachments a WHERE a.entity_type='TRANSACTION' AND a.entity_id=t.id) AS attachment_count
@@ -333,7 +338,7 @@ export async function listLedgerPage(
 
 export async function listLedger(filters: LedgerFilters = {}): Promise<LedgerRow[]> {
   const where = buildLedgerWhere(filters)
-  return withDatabaseAccess(async () =>
+  return withDatabaseRead(async () =>
     (await getDatabase()).select<LedgerRow[]>(`${ledgerColumnsSql}, 0 AS attachment_count
       ${ledgerFromSql} ${where.sql}
       ORDER BY t.occurred_at DESC,t.id DESC`, where.values),

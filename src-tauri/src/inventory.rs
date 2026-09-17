@@ -1,5 +1,5 @@
-use serde::Deserialize;
-use sqlx::{Connection, SqliteConnection};
+use serde::{Deserialize, Serialize};
+use sqlx::{Connection, Row, SqliteConnection};
 use std::{collections::HashMap, fs, path::PathBuf, process::Command};
 use tauri::AppHandle;
 use uuid::Uuid;
@@ -48,6 +48,37 @@ pub struct StockTransactionUpdateInput {
     receiver: Option<String>,
     remark: Option<String>,
     adjustment_basis: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InventoryPageInput {
+    keyword: Option<String>,
+    unit: Option<String>,
+    location_id: Option<i64>,
+    page: i64,
+    page_size: i64,
+    known_total: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InventoryPageRow {
+    material_id: i64,
+    material_name: String,
+    unit_name: Option<String>,
+    location_id: i64,
+    location_name: String,
+    quantity: f64,
+    updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InventoryPageResult {
+    rows: Vec<InventoryPageRow>,
+    total: i64,
+    page: i64,
+    page_size: i64,
 }
 
 fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -132,6 +163,140 @@ async fn commit(connection: &mut SqliteConnection) -> Result<(), String> {
         .await
         .map(|_| ())
         .map_err(|e| format!("库存事务提交失败：{e}"))
+}
+
+fn normalized_like(value: &Option<String>) -> Option<String> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("%{value}%"))
+}
+
+fn inventory_filter_sql(
+    keyword: &Option<String>,
+    unit: &Option<String>,
+    location_id: Option<i64>,
+) -> String {
+    let mut conditions = vec!["b.quantity<>0"];
+    if keyword.is_some() {
+        conditions.push("m.name LIKE ?");
+    }
+    if unit.is_some() {
+        conditions.push("COALESCE(u.name,'') LIKE ?");
+    }
+    if location_id.is_some() {
+        conditions.push("b.location_id=?");
+    }
+    conditions.join(" AND ")
+}
+
+#[tauri::command]
+pub async fn list_inventory_page(
+    app: AppHandle,
+    input: InventoryPageInput,
+) -> Result<InventoryPageResult, String> {
+    let page = input.page.max(1);
+    let page_size = match input.page_size {
+        100 | 200 | 500 => input.page_size,
+        _ => 100,
+    };
+    let offset = (page - 1) * page_size;
+    let keyword = normalized_like(&input.keyword);
+    let unit = normalized_like(&input.unit);
+    let location_id = input.location_id.filter(|id| *id > 0);
+    let where_sql = inventory_filter_sql(&keyword, &unit, location_id);
+    let total_expression = if input.known_total.is_some() {
+        "? AS total_count"
+    } else {
+        "COUNT(*) OVER() AS total_count"
+    };
+    let sql = format!(
+        r#"SELECT b.material_id,m.name AS material_name,u.name AS unit_name,
+                  b.location_id,l.name AS location_name,CAST(b.quantity AS REAL) AS quantity,
+                  b.updated_at,{total_expression}
+           FROM inventory_balances b
+           JOIN materials m ON m.id=b.material_id
+           LEFT JOIN units u ON u.id=m.unit_id
+           JOIN locations l ON l.id=b.location_id
+           WHERE {where_sql}
+           ORDER BY CASE WHEN l.name GLOB '[0-9]*' THEN CAST(l.name AS INTEGER) ELSE 2147483647 END,
+                    l.name COLLATE NOCASE,m.name COLLATE NOCASE
+           LIMIT ? OFFSET ?"#
+    );
+
+    let mut connection = open_connection(&app).await?;
+    let mut query = sqlx::query(&sql);
+    if let Some(total) = input.known_total {
+        query = query.bind(total.max(0));
+    }
+    if let Some(value) = &keyword {
+        query = query.bind(value);
+    }
+    if let Some(value) = &unit {
+        query = query.bind(value);
+    }
+    if let Some(value) = location_id {
+        query = query.bind(value);
+    }
+    let result_rows = query
+        .bind(page_size)
+        .bind(offset)
+        .fetch_all(&mut connection)
+        .await
+        .map_err(|e| format!("库存分布查询失败：{e}"))?;
+
+    let mut total = result_rows
+        .first()
+        .and_then(|row| row.try_get::<i64, _>("total_count").ok())
+        .unwrap_or(0);
+    if result_rows.is_empty() && input.known_total.is_none() && page > 1 {
+        let count_sql = format!(
+            r#"SELECT COUNT(*)
+               FROM inventory_balances b
+               JOIN materials m ON m.id=b.material_id
+               LEFT JOIN units u ON u.id=m.unit_id
+               JOIN locations l ON l.id=b.location_id
+               WHERE {where_sql}"#
+        );
+        let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql);
+        if let Some(value) = &keyword {
+            count_query = count_query.bind(value);
+        }
+        if let Some(value) = &unit {
+            count_query = count_query.bind(value);
+        }
+        if let Some(value) = location_id {
+            count_query = count_query.bind(value);
+        }
+        total = count_query
+            .fetch_one(&mut connection)
+            .await
+            .map_err(|e| format!("库存分布统计失败：{e}"))?;
+    }
+
+    let rows = result_rows
+        .into_iter()
+        .map(|row| {
+            Ok(InventoryPageRow {
+                material_id: row.try_get("material_id")?,
+                material_name: row.try_get("material_name")?,
+                unit_name: row.try_get("unit_name")?,
+                location_id: row.try_get("location_id")?,
+                location_name: row.try_get("location_name")?,
+                quantity: row.try_get("quantity")?,
+                updated_at: row.try_get("updated_at")?,
+            })
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()
+        .map_err(|e| format!("库存分布数据转换失败：{e}"))?;
+
+    Ok(InventoryPageResult {
+        rows,
+        total,
+        page,
+        page_size,
+    })
 }
 
 async fn stock_in_on_connection(

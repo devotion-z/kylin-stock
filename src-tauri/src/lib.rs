@@ -33,6 +33,7 @@ pub fn run() {
             inventory::stock_out,
             inventory::stock_in_batch,
             inventory::stock_out_batch,
+            inventory::list_inventory_page,
             inventory::delete_stock_transaction,
             inventory::update_stock_transaction,
             inventory::transfer_stock,

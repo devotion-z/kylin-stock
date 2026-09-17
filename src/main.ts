@@ -28,6 +28,13 @@ async function bootstrap() {
   // Excel is loaded separately only when requested, so module switches no
   // longer wait for the large spreadsheet library.
   window.setTimeout(() => { void preloadRouteViews() }, 0)
+  // Warm the small first page of the distribution view after startup. The
+  // cache is revision-aware and is discarded automatically after any write.
+  window.setTimeout(() => {
+    void import('./services/inventory')
+      .then(({ preloadInventoryDistribution }) => preloadInventoryDistribution())
+      .catch(() => undefined)
+  }, 0)
 }
 
 bootstrap().catch((error) => {
