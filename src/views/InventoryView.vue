@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onActivated, reactive, ref, watch } from 'vue'
+import { computed, onActivated, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { deleteInventoryPosition, listInventory, listInventoryPage, transferStock, type InventoryFilters, type InventoryRow } from '../services/inventory'
@@ -9,7 +9,8 @@ import { formatDateTime, toLocalDateValue } from '../utils/date'
 
 const loading = ref(false)
 const route = useRoute()
-const isDistribution = computed(() => route.path === '/distribution')
+// Each inventory route has its own kept-alive instance and filter state.
+const isDistribution = ref(route.path === '/distribution')
 const exporting = ref(false)
 const managing = ref(false)
 const operationBusy = computed(() => loading.value || exporting.value || managing.value)
@@ -19,6 +20,7 @@ const currentPage = ref(1)
 const pageSize = ref(100)
 const locations = ref<Location[]>([])
 const materialOptions = ref<MaterialOption[]>([])
+const materialSelectOptions = computed(() => [...new Set(materialOptions.value.map(item => item.name))].map(name => ({ label: name, value: name })))
 const filters = reactive({ keyword: '', unit: '', locationId: undefined as number | undefined })
 const appliedFilters = ref<InventoryFilters>({ summary: !isDistribution.value })
 const transferDialogVisible = ref(false)
@@ -165,34 +167,19 @@ function handleManage(command: string, row: InventoryRow) {
 
 onActivated(() => {
   void refresh()
-  if (!locations.value.length) {
-    void listLocations()
-      .then(value => { locations.value = value })
-      .catch(() => undefined)
-  }
-  if (!materialOptions.value.length) {
-    void listMaterialOptions()
-      .then(value => { materialOptions.value = value })
-      .catch(() => undefined)
-  }
-})
-watch(() => route.path, (path, previousPath) => {
-  const isInventoryPath = path === '/inventory' || path === '/distribution'
-  const wasInventoryPath = previousPath === '/inventory' || previousPath === '/distribution'
-  if (!isInventoryPath || !wasInventoryPath) return
-  filters.locationId = undefined
-  appliedFilters.value = snapshotFilters()
-  currentPage.value = 1
-  void refresh()
+  void listLocations()
+    .then(value => { locations.value = value })
+    .catch(() => undefined)
+  void listMaterialOptions()
+    .then(value => { materialOptions.value = value })
+    .catch(() => undefined)
 })
 </script>
 
 <template>
   <el-card shadow="never">
     <div class="toolbar">
-      <el-select v-model="filters.keyword" :disabled="operationBusy" clearable filterable placeholder="输入或选择物资名称" style="width:220px" @change="query">
-        <el-option v-for="item in materialOptions" :key="item.id" :label="item.name" :value="item.name" />
-      </el-select>
+      <el-select-v2 v-model="filters.keyword" :options="materialSelectOptions" :disabled="operationBusy" clearable filterable placeholder="输入或选择物资名称" style="width:220px" @change="query" />
       <el-input v-model="filters.unit" :disabled="operationBusy" clearable placeholder="计量单位" style="width:150px" @keyup.enter="query" />
       <el-select v-if="isDistribution" v-model="filters.locationId" :disabled="operationBusy" clearable filterable placeholder="存放位置" style="width:180px">
         <el-option v-for="item in locations" :key="item.id" :label="item.name" :value="item.id" />

@@ -72,7 +72,7 @@ const menu = [
       <el-main class="content">
         <router-view v-slot="{ Component }">
           <keep-alive>
-            <component :is="Component" />
+            <component :is="Component" :key="['/inventory', '/distribution'].includes(route.path) ? route.path : undefined" />
           </keep-alive>
         </router-view>
       </el-main>

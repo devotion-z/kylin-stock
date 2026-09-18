@@ -196,6 +196,14 @@ pub async fn list_inventory_page(
     app: AppHandle,
     input: InventoryPageInput,
 ) -> Result<InventoryPageResult, String> {
+    let mut connection = open_connection(&app).await?;
+    list_inventory_page_from_connection(&mut connection, input).await
+}
+
+async fn list_inventory_page_from_connection(
+    connection: &mut SqliteConnection,
+    input: InventoryPageInput,
+) -> Result<InventoryPageResult, String> {
     let page = input.page.max(1);
     let page_size = match input.page_size {
         100 | 200 | 500 => input.page_size,
@@ -206,30 +214,21 @@ pub async fn list_inventory_page(
     let unit = normalized_like(&input.unit);
     let location_id = input.location_id.filter(|id| *id > 0);
     let where_sql = inventory_filter_sql(&keyword, &unit, location_id);
-    let total_expression = if input.known_total.is_some() {
-        "? AS total_count"
-    } else {
-        "COUNT(*) OVER() AS total_count"
-    };
     let sql = format!(
         r#"SELECT b.material_id,m.name AS material_name,u.name AS unit_name,
                   b.location_id,l.name AS location_name,CAST(b.quantity AS REAL) AS quantity,
-                  b.updated_at,{total_expression}
+                  b.updated_at
            FROM inventory_balances b
            JOIN materials m ON m.id=b.material_id
            LEFT JOIN units u ON u.id=m.unit_id
            JOIN locations l ON l.id=b.location_id
            WHERE {where_sql}
            ORDER BY CASE WHEN l.name GLOB '[0-9]*' THEN CAST(l.name AS INTEGER) ELSE 2147483647 END,
-                    l.name COLLATE NOCASE,m.name COLLATE NOCASE
+                    l.name COLLATE NOCASE,m.name COLLATE NOCASE,b.material_id,b.location_id
            LIMIT ? OFFSET ?"#
     );
 
-    let mut connection = open_connection(&app).await?;
     let mut query = sqlx::query(&sql);
-    if let Some(total) = input.known_total {
-        query = query.bind(total.max(0));
-    }
     if let Some(value) = &keyword {
         query = query.bind(value);
     }
@@ -242,21 +241,26 @@ pub async fn list_inventory_page(
     let result_rows = query
         .bind(page_size)
         .bind(offset)
-        .fetch_all(&mut connection)
+        .fetch_all(&mut *connection)
         .await
         .map_err(|e| format!("库存分布查询失败：{e}"))?;
 
-    let mut total = result_rows
-        .first()
-        .and_then(|row| row.try_get::<i64, _>("total_count").ok())
-        .unwrap_or(0);
-    if result_rows.is_empty() && input.known_total.is_none() && page > 1 {
+    let total = if let Some(total) = input.known_total {
+        total.max(0)
+    } else if page == 1 && result_rows.len() < page_size as usize {
+        result_rows.len() as i64
+    } else {
+        // Count without sorting or materializing every row in a window function.
+        // With no name/unit filter, the balance table alone is sufficient (FKs).
+        let joins = if keyword.is_some() || unit.is_some() {
+            "JOIN materials m ON m.id=b.material_id LEFT JOIN units u ON u.id=m.unit_id"
+        } else {
+            ""
+        };
         let count_sql = format!(
             r#"SELECT COUNT(*)
                FROM inventory_balances b
-               JOIN materials m ON m.id=b.material_id
-               LEFT JOIN units u ON u.id=m.unit_id
-               JOIN locations l ON l.id=b.location_id
+               {joins}
                WHERE {where_sql}"#
         );
         let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql);
@@ -269,11 +273,11 @@ pub async fn list_inventory_page(
         if let Some(value) = location_id {
             count_query = count_query.bind(value);
         }
-        total = count_query
-            .fetch_one(&mut connection)
+        count_query
+            .fetch_one(&mut *connection)
             .await
-            .map_err(|e| format!("库存分布统计失败：{e}"))?;
-    }
+            .map_err(|e| format!("库存分布统计失败：{e}"))?
+    };
 
     let rows = result_rows
         .into_iter()
@@ -953,6 +957,152 @@ pub async fn scan_document(source_path: String) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn corrected_unit_keeps_both_warehouses_visible_and_available_for_stock_out() {
+        let mut connection = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        configure_connection(&mut connection).await.unwrap();
+        crate::migration::run_migrations_on_connection(&mut connection)
+            .await
+            .unwrap();
+        for sql in [
+            "INSERT INTO locations(id,name) VALUES (1,'1号库'),(2,'2号库')",
+            "INSERT INTO materials(id,name,unit_id,created_at,updated_at) VALUES (19,'工具',3,'old','old'),(27,'工具',2,'old','old')",
+        ] { sqlx::query(sql).execute(&mut connection).await.unwrap(); }
+        let mut inbound = input(20.0);
+        inbound.material_id = 19;
+        inbound.location_id = 1;
+        stock_in_on_connection(&mut connection, &inbound)
+            .await
+            .unwrap();
+        inbound.material_id = 27;
+        inbound.location_id = 2;
+        inbound.quantity = 30.0;
+        stock_in_on_connection(&mut connection, &inbound)
+            .await
+            .unwrap();
+        crate::database::merge_materials_from_connection(
+            &mut connection,
+            27,
+            19,
+            "工具",
+            None,
+            Some(3),
+            None,
+            Some(2),
+            None,
+            "new",
+        )
+        .await
+        .unwrap();
+        let result = list_inventory_page_from_connection(
+            &mut connection,
+            InventoryPageInput {
+                keyword: Some("工具".into()),
+                unit: Some("具".into()),
+                location_id: None,
+                page: 1,
+                page_size: 100,
+                known_total: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.total, 2);
+        assert_eq!(
+            result
+                .rows
+                .iter()
+                .map(|row| (row.material_id, row.location_id, row.quantity))
+                .collect::<Vec<_>>(),
+            vec![(19, 1, 20.0), (19, 2, 30.0)]
+        );
+        let mut outbound = inbound;
+        outbound.material_id = 19;
+        outbound.quantity = 5.0;
+        outbound.destination = Some("领用单位".into());
+        for location in [1, 2] {
+            outbound.location_id = location;
+            stock_out_on_connection(&mut connection, &outbound)
+                .await
+                .unwrap();
+        }
+        let result = list_inventory_page_from_connection(
+            &mut connection,
+            InventoryPageInput {
+                keyword: None,
+                unit: None,
+                location_id: None,
+                page: 1,
+                page_size: 100,
+                known_total: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            result
+                .rows
+                .iter()
+                .map(|row| row.quantity)
+                .collect::<Vec<_>>(),
+            vec![15.0, 25.0]
+        );
+    }
+
+    #[tokio::test]
+    async fn distribution_large_dataset_paginates_and_keeps_empty_page_total() {
+        let mut connection = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        crate::migration::run_migrations_on_connection(&mut connection)
+            .await
+            .unwrap();
+        for sql in [
+            "INSERT INTO locations(id,name) VALUES (1,'1号库'),(2,'2号库')",
+            "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<10000) INSERT INTO materials(id,name,unit_id,created_at,updated_at) SELECT x,printf('物资%05d',x),3,'old','old' FROM n",
+            "INSERT INTO inventory_balances(material_id,location_id,quantity,updated_at) SELECT m.id,l.id,100,'old' FROM materials m CROSS JOIN locations l",
+        ] { sqlx::query(sql).execute(&mut connection).await.unwrap(); }
+        let old_start = std::time::Instant::now();
+        let old_rows = sqlx::query("SELECT b.material_id,m.name,u.name,b.location_id,l.name,CAST(b.quantity AS REAL),b.updated_at,COUNT(*) OVER() FROM inventory_balances b JOIN materials m ON m.id=b.material_id LEFT JOIN units u ON u.id=m.unit_id JOIN locations l ON l.id=b.location_id WHERE b.quantity<>0 ORDER BY CASE WHEN l.name GLOB '[0-9]*' THEN CAST(l.name AS INTEGER) ELSE 2147483647 END,l.name COLLATE NOCASE,m.name COLLATE NOCASE LIMIT 100")
+            .fetch_all(&mut connection).await.unwrap();
+        let old_elapsed = old_start.elapsed();
+        assert_eq!(old_rows.len(), 100);
+        let start = std::time::Instant::now();
+        let result = list_inventory_page_from_connection(
+            &mut connection,
+            InventoryPageInput {
+                keyword: None,
+                unit: None,
+                location_id: None,
+                page: 1,
+                page_size: 100,
+                known_total: None,
+            },
+        )
+        .await
+        .unwrap();
+        eprintln!(
+            "20,000 warehouse balances: window query {:?}; paged query {:?}",
+            old_elapsed,
+            start.elapsed()
+        );
+        assert_eq!(result.total, 20000);
+        assert_eq!(result.rows.len(), 100);
+        let empty = list_inventory_page_from_connection(
+            &mut connection,
+            InventoryPageInput {
+                keyword: None,
+                unit: None,
+                location_id: None,
+                page: 201,
+                page_size: 100,
+                known_total: Some(20000),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(empty.rows.is_empty());
+        assert_eq!(empty.total, 20000);
+    }
 
     async fn test_connection() -> SqliteConnection {
         let mut connection = SqliteConnection::connect("sqlite::memory:")

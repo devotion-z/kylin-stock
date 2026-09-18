@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { buildInventoryWhere, buildLedgerWhere, sortInventoryByLocation, type InventoryRow } from './inventory'
+import { buildInventoryWhere, buildLedgerWhere, indexInventory, sortInventoryByLocation, type InventoryRow } from './inventory'
+
+it('indexes both warehouses of the merged material without losing quantities', () => {
+  const index = indexInventory([
+    { ...row('1号库', '工具'), location_id: 1, quantity: 20 },
+    { ...row('2号库', '工具'), location_id: 2, quantity: 30 },
+  ])
+  expect(index.byMaterial.get(1)).toHaveLength(2)
+  expect(index.totals.get(1)).toBe(50)
+  expect(index.quantities.get('1:1')).toBe(20)
+  expect(index.quantities.get('1:2')).toBe(30)
+})
 
 function row(location_name: string, material_name: string): InventoryRow {
   return {

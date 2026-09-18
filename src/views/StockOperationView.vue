@@ -3,7 +3,7 @@ import { computed, onActivated, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { listLocations, listMaterials, type Location, type Material } from '../services/masterData'
-import { getTransactionIdByNo, listInventory, scanDocument, stockInBatch, stockOutBatch, type InventoryRow } from '../services/inventory'
+import { getTransactionIdByNo, indexInventory, listInventory, scanDocument, stockInBatch, stockOutBatch, type InventoryRow } from '../services/inventory'
 import { toLocalDateValue } from '../utils/date'
 import AttachmentField from '../components/AttachmentField.vue'
 import { addAttachment, chooseAttachmentImages } from '../services/attachments'
@@ -11,12 +11,13 @@ import { ensureBusinessOption, listBusinessOptions, type BusinessOption } from '
 import { parseQuantityInput } from '../utils/quantity'
 
 const route = useRoute()
-const isOut = computed(() => route.path === '/stock-out')
+const isOut = ref(route.path === '/stock-out')
 const submitting = ref(false)
 const loading = ref(false)
 const materials = ref<Material[]>([])
 const locations = ref<Location[]>([])
 const inventoryRows = ref<InventoryRow[]>([])
+const inventoryIndex = computed(() => indexInventory(inventoryRows.value))
 const pendingAttachments = ref<string[]>([])
 const relatedUnitOptions = ref<BusinessOption[]>([])
 const scanCode = ref('')
@@ -51,8 +52,8 @@ function onMaterialChange(index: number, id: number) {
   const material = materials.value.find((item) => item.id === id)
   if (!material) return
   if (isOut.value) {
-    const stocked = inventoryRows.value
-      .filter((item) => item.material_id === id && Number(item.quantity) > 0)
+    const stocked = (inventoryIndex.value.byMaterial.get(id) ?? [])
+      .filter((item) => Number(item.quantity) > 0)
       .sort((left, right) => Number(right.quantity) - Number(left.quantity))
     const preferred = stocked.find((item) => item.location_id === material.default_location_id) ?? stocked[0]
     lines.value[index].locationId = preferred?.location_id
@@ -62,19 +63,20 @@ function onMaterialChange(index: number, id: number) {
 }
 
 function materialLabel(item: Material) {
-  const location = item.default_location_id ? locations.value.find((entry) => entry.id === item.default_location_id)?.name : ''
-  const available = inventoryRows.value
-    .filter((row) => row.material_id === item.id)
-    .reduce((sum, row) => sum + Number(row.quantity), 0)
+  const stocked = inventoryIndex.value.byMaterial.get(item.id) ?? []
+  const location = [...new Set(stocked.filter(row => row.quantity > 0).map(row => row.location_name))].join('、')
+  const available = inventoryIndex.value.totals.get(item.id) ?? 0
   const details = [item.unit_name, location, isOut.value ? `可用 ${formatQuantity(available)}` : ''].filter(Boolean).join(' · ')
   return details ? `${item.name}（${details}）` : item.name
 }
+
+const materialSelectOptions = computed(() => materials.value.map(item => ({ value: item.id, label: materialLabel(item) })))
 
 const quantityFormatter = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 6 })
 function formatQuantity(value: number) { return quantityFormatter.format(value) }
 function availableQuantity(materialId?: number, locationId?: number) {
   if (!materialId || !locationId) return 0
-  return Number(inventoryRows.value.find((item) => item.material_id === materialId && item.location_id === locationId)?.quantity ?? 0)
+  return inventoryIndex.value.quantities.get(`${materialId}:${locationId}`) ?? 0
 }
 function locationLabel(location: Location, line: OperationLine) {
   if (!isOut.value || !line.materialId) return location.name
@@ -188,10 +190,11 @@ async function submit() {
 watch(() => route.path, (path, previousPath) => {
   const isOperationPath = path === '/stock-in' || path === '/stock-out'
   const wasOperationPath = previousPath === '/stock-in' || previousPath === '/stock-out'
+  if (isOperationPath) isOut.value = path === '/stock-out'
   if (isOperationPath && !submitting.value) reset()
   if (isOperationPath && wasOperationPath) void load()
 })
-onActivated(() => { void load() })
+onActivated(() => { isOut.value = route.path === '/stock-out'; void load() })
 </script>
 
 <template>
@@ -214,9 +217,7 @@ onActivated(() => { void load() })
       <el-form-item :label="isOut ? '出库物资明细' : '入库物资明细'" required>
         <div class="line-list">
           <div v-for="(line, index) in lines" :key="index" class="operation-line">
-            <el-select v-model="line.materialId" filterable placeholder="物资名称" class="line-material" @change="onMaterialChange(index, line.materialId!)">
-              <el-option v-for="item in materials" :key="item.id" :label="materialLabel(item)" :value="item.id" />
-            </el-select>
+            <el-select-v2 v-model="line.materialId" :options="materialSelectOptions" filterable placeholder="物资名称" class="line-material" @change="onMaterialChange(index, line.materialId!)" />
             <el-select v-model="line.locationId" filterable placeholder="存放位置" class="line-location">
               <el-option v-for="item in locations" :key="item.id" :label="locationLabel(item, line)" :value="item.id" />
             </el-select>

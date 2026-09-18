@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onActivated, ref } from 'vue'
+import { getDatabaseRevision } from '../services/database'
 import { ElMessage } from 'element-plus'
 import { loadDashboard, listCategoryInventory, type CategoryInventoryRow, type CategorySummary, type RecentTransaction, type StockOverviewRow } from '../services/dashboard'
 import { formatBusinessDate } from '../utils/date'
@@ -11,6 +12,7 @@ const categories = ref<CategorySummary[]>([])
 const selectedCategory = ref('')
 const categoryInventory = ref<CategoryInventoryRow[]>([])
 const categoryLoading = ref(false)
+let loadedRevision = -1
 
 const categoryCards = computed(() => categories.value.map((item, index) => ({
   ...item,
@@ -30,6 +32,7 @@ async function selectCategory(category: string) {
 }
 
 async function refresh() {
+  const revision = getDatabaseRevision()
   loading.value = true
   try {
     const data = await loadDashboard()
@@ -41,6 +44,7 @@ async function refresh() {
       : data.categories[0]?.category_name ?? ''
     if (nextCategory) await selectCategory(nextCategory)
     else { selectedCategory.value = ''; categoryInventory.value = [] }
+    loadedRevision = revision
   } catch (e) {
     ElMessage.error(`首页数据加载失败：${e instanceof Error ? e.message : String(e)}`)
   } finally {
@@ -48,7 +52,7 @@ async function refresh() {
   }
 }
 
-onMounted(refresh)
+onActivated(() => { if (loadedRevision !== getDatabaseRevision()) void refresh() })
 </script>
 
 <template>

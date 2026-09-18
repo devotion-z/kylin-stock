@@ -130,9 +130,14 @@ export async function withDatabaseRead<T>(operation: () => Promise<T>): Promise<
 }
 
 export async function withDatabaseMutation<T>(operation: () => Promise<T>): Promise<T> {
-  const result = await withDatabaseAccess(operation)
-  databaseRevision += 1
-  return result
+  return withDatabaseAccess(async () => {
+    try {
+      return await operation()
+    } finally {
+      // Invalidate before readers can start, including partially failed writes.
+      databaseRevision += 1
+    }
+  })
 }
 
 export function getDatabaseRevision() {

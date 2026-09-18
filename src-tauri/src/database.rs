@@ -232,7 +232,7 @@ pub async fn delete_location(app: AppHandle, id: i64) -> Result<DeleteLocationRe
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn merge_materials_from_connection(
+pub(crate) async fn merge_materials_from_connection(
     connection: &mut SqliteConnection,
     source_id: i64,
     target_id: i64,

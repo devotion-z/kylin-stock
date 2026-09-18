@@ -11,6 +11,23 @@ export interface InventoryRow {
   updated_at: string
 }
 
+export function indexInventory(rows: InventoryRow[]) {
+  const byMaterial = new Map<number, InventoryRow[]>()
+  const totals = new Map<number, number>()
+  const quantities = new Map<string, number>()
+  for (const row of rows) {
+    const materialId = Number(row.material_id)
+    const key = `${materialId}:${Number(row.location_id)}`
+    const quantity = Number(row.quantity)
+    const positions = byMaterial.get(materialId) ?? []
+    positions.push(row)
+    byMaterial.set(materialId, positions)
+    totals.set(materialId, (totals.get(materialId) ?? 0) + quantity)
+    quantities.set(key, (quantities.get(key) ?? 0) + quantity)
+  }
+  return { byMaterial, totals, quantities }
+}
+
 export interface LedgerRow {
   id: number
   transaction_no: string
@@ -251,26 +268,31 @@ export async function listInventoryPage(
 ): Promise<InventoryPage> {
   const safePage = Math.max(1, Math.trunc(page) || 1)
   const safePageSize = [100, 200, 500].includes(pageSize) ? pageSize : 100
-  const revision = getDatabaseRevision()
-  if (revision !== inventoryPageCacheRevision) {
-    inventoryPageCache.clear()
-    inventoryPageCacheRevision = revision
-  }
-  const input = {
-    keyword: filters.keyword?.trim() || undefined,
-    unit: filters.unit?.trim() || undefined,
-    locationId: Number(filters.locationId) > 0 ? Number(filters.locationId) : undefined,
-    page: safePage,
-    pageSize: safePageSize,
-    knownTotal,
-  }
-  const key = JSON.stringify(input)
-  const cached = inventoryPageCache.get(key)
-  if (cached) return cached
+  return withDatabaseRead(async () => {
+    const revision = getDatabaseRevision()
+    if (revision !== inventoryPageCacheRevision) {
+      inventoryPageCache.clear()
+      inventoryPageCacheRevision = revision
+    }
+    const input = {
+      keyword: filters.keyword?.trim() || undefined,
+      unit: filters.unit?.trim() || undefined,
+      locationId: Number(filters.locationId) > 0 ? Number(filters.locationId) : undefined,
+      page: safePage,
+      pageSize: safePageSize,
+      knownTotal,
+    }
+    const key = JSON.stringify({ ...input, knownTotal: undefined })
+    const cached = inventoryPageCache.get(key)
+    if (cached) return cached
 
-  const result = await withDatabaseRead(() => invoke<InventoryPage>('list_inventory_page', { input }))
-  if (revision === getDatabaseRevision()) inventoryPageCache.set(key, result)
-  return result
+    const result = await invoke<InventoryPage>('list_inventory_page', { input })
+    if (revision === getDatabaseRevision()) {
+      if (inventoryPageCache.size >= 30) inventoryPageCache.delete(inventoryPageCache.keys().next().value!)
+      inventoryPageCache.set(key, result)
+    }
+    return result
+  })
 }
 
 export async function preloadInventoryDistribution() {

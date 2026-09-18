@@ -15,6 +15,7 @@ export interface Material {
   category: string | null
   default_location_id: number | null
   location_name: string | null
+  stock_locations?: string | null
   remark: string | null
   status: number
   created_at: string
@@ -104,6 +105,12 @@ export async function listMaterials(keyword = ''): Promise<Material[]> {
     (await getDatabase()).select<Material[]>(`
       SELECT m.id, m.name, m.barcode, m.unit_id, u.name AS unit_name, m.category,
              m.default_location_id, l.name AS location_name, m.remark,
+             (SELECT GROUP_CONCAT(name, '、') FROM (
+               SELECT sl.name FROM inventory_balances b
+               JOIN locations sl ON sl.id=b.location_id
+               WHERE b.material_id=m.id AND b.quantity<>0
+               ORDER BY sl.name
+             )) AS stock_locations,
              m.status, m.created_at, m.updated_at,
              (SELECT COUNT(*) FROM attachments a WHERE a.entity_type='MATERIAL' AND a.entity_id=m.id) AS attachment_count
       FROM materials m

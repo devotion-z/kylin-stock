@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onActivated, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { createLocation, createUnit, deleteLocation, deleteUnit, deleteMaterial, listLocations, listMaterials, listUnits, resolveLocationChoice, resolveUnitChoice, saveMaterial, setMaterialStatus, type Location, type MasterDataChoice, type Material, type Unit } from '../services/masterData'
 import { exportMaterialRows } from '../services/export'
@@ -81,8 +81,10 @@ async function submit() {
     const unitId = await resolveUnitChoice(form.unitId, units.value)
     const locationId = await resolveLocationChoice(form.locationId, locations.value)
     const result = await saveMaterial({ ...form, id: editingMaterialId.value, unitId, locationId })
-    const materialId = editingMaterialId.value ?? Number(result.lastInsertId)
+    const materialId = result.merged ? Number(result.lastInsertId) : editingMaterialId.value ?? Number(result.lastInsertId)
+    editingMaterialId.value = materialId
     form.id = materialId
+    if (result.merged) attachments.value = await listAttachments('MATERIAL', materialId)
     while (pendingAttachments.value.length) {
       const saved = await addAttachment('MATERIAL', materialId, pendingAttachments.value[0])
       attachments.value.push(saved)
@@ -205,7 +207,7 @@ async function exportCurrent() {
   }
 }
 
-onMounted(refresh)
+onActivated(refresh)
 </script>
 
 <template>
@@ -232,7 +234,8 @@ onMounted(refresh)
       <el-table-column prop="unit_name" label="单位" width="100" />
       <el-table-column prop="barcode" label="条码" min-width="150" />
       <el-table-column prop="category" label="分类" min-width="130" />
-      <el-table-column prop="location_name" label="存放位置" min-width="160" />
+      <el-table-column label="库存所在库房" min-width="180"><template #default="{ row }">{{ row.stock_locations || '暂无库存' }}</template></el-table-column>
+      <el-table-column prop="location_name" label="默认入库位置" min-width="140" />
       <el-table-column prop="remark" label="备注" min-width="180" show-overflow-tooltip />
       <el-table-column label="单据图片" width="100"><template #default="{ row }">{{ row.attachment_count ? `${row.attachment_count} 张` : '-' }}</template></el-table-column>
       <el-table-column label="状态" width="90"><template #default="{ row }"><el-tag :type="row.status === 1 ? 'success' : 'info'">{{ row.status === 1 ? '正常' : '停用' }}</el-tag></template></el-table-column>
@@ -250,7 +253,7 @@ onMounted(refresh)
         </el-select>
       </el-form-item>
       <el-form-item label="物资分类"><el-input v-model="form.category" /></el-form-item>
-      <el-form-item label="存放位置">
+      <el-form-item label="默认入库位置">
         <el-select v-model="form.locationId" clearable filterable allow-create default-first-option style="width:100%" placeholder="请选择，或输入新位置后按回车" no-data-text="输入位置名称后按回车创建">
           <el-option v-for="item in locations" :key="item.id" :label="item.name" :value="item.id" />
         </el-select>
