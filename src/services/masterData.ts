@@ -16,6 +16,7 @@ export interface Material {
   default_location_id: number | null
   location_name: string | null
   stock_locations?: string | null
+  registered_locations?: string | null
   remark: string | null
   status: number
   created_at: string
@@ -27,6 +28,7 @@ interface MaterialSaveResult {
   rowsAffected: number
   lastInsertId: number
   merged?: boolean
+  reused?: boolean
 }
 
 const now = () => new Date().toISOString()
@@ -111,6 +113,13 @@ export async function listMaterials(keyword = ''): Promise<Material[]> {
                WHERE b.material_id=m.id AND b.quantity<>0
                ORDER BY sl.name
              )) AS stock_locations,
+             (SELECT GROUP_CONCAT(name, '、') FROM (
+               SELECT rl.name FROM locations rl
+               WHERE rl.id IN (
+                 SELECT m.default_location_id UNION
+                 SELECT rb.location_id FROM inventory_balances rb WHERE rb.material_id=m.id
+               ) ORDER BY rl.name
+             )) AS registered_locations,
              m.status, m.created_at, m.updated_at,
              (SELECT COUNT(*) FROM attachments a WHERE a.entity_type='MATERIAL' AND a.entity_id=m.id) AS attachment_count
       FROM materials m
@@ -164,9 +173,12 @@ export async function saveMaterial(input: {
     `, [normalized.name, normalized.unitId, normalized.id ?? null])
     if (conflicts.length) {
       if (!normalized.id) {
-        throw new Error(conflicts[0].status === 0
-          ? '同名同计量单位物资已停用，请直接重新启用原物资'
-          : '同名同计量单位物资已存在；一个物资可存放在多个库房，请勿重复添加')
+        return invoke<MaterialSaveResult>('reuse_material', {
+          id: Number(conflicts[0].id),
+          name: normalized.name,
+          unitId: normalized.unitId,
+          locationId: normalized.locationId,
+        })
       }
       mergeTargetId = Number(conflicts[0].id)
     }

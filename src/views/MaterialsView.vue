@@ -82,16 +82,20 @@ async function submit() {
     const locationId = await resolveLocationChoice(form.locationId, locations.value)
     const result = await saveMaterial({ ...form, id: editingMaterialId.value, unitId, locationId })
     const materialId = result.merged ? Number(result.lastInsertId) : editingMaterialId.value ?? Number(result.lastInsertId)
-    editingMaterialId.value = materialId
+    // A reused archive keeps its original metadata. If attachment upload fails,
+    // retry the create/reuse path rather than updating it with the new form.
+    if (!result.reused) editingMaterialId.value = materialId
     form.id = materialId
-    if (result.merged) attachments.value = await listAttachments('MATERIAL', materialId)
+    if (result.merged || result.reused) attachments.value = await listAttachments('MATERIAL', materialId)
     while (pendingAttachments.value.length) {
       const saved = await addAttachment('MATERIAL', materialId, pendingAttachments.value[0])
       attachments.value.push(saved)
       pendingAttachments.value.shift()
     }
     dialogVisible.value = false
-    ElMessage.success(result.merged ? '保存成功，重复物资及其库存记录已合并' : '保存成功')
+    ElMessage.success(result.reused
+      ? '保存成功，已沿用同名同单位物资并关联所选库房；数量请到入库登记填写'
+      : result.merged ? '保存成功，重复物资及其库存记录已合并' : '保存成功')
     await loadData(keyword.value)
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : String(e))
@@ -234,6 +238,7 @@ onActivated(refresh)
       <el-table-column prop="unit_name" label="单位" width="100" />
       <el-table-column prop="barcode" label="条码" min-width="150" />
       <el-table-column prop="category" label="分类" min-width="130" />
+      <el-table-column prop="registered_locations" label="已关联库房" min-width="180" />
       <el-table-column label="库存所在库房" min-width="180"><template #default="{ row }">{{ row.stock_locations || '暂无库存' }}</template></el-table-column>
       <el-table-column prop="location_name" label="默认入库位置" min-width="140" />
       <el-table-column prop="remark" label="备注" min-width="180" show-overflow-tooltip />
@@ -244,6 +249,7 @@ onActivated(refresh)
   </el-card>
 
   <el-dialog v-model="dialogVisible" :title="dialogTitle" width="520px" :close-on-click-modal="!mutating" :close-on-press-escape="!mutating" :show-close="!mutating">
+    <el-alert v-if="!editingMaterialId" title="同名同单位物资会沿用原档案，仅补充库房和图片；原条码、分类、备注及库存数量不变。数量请在入库登记中填写。" type="info" :closable="false" style="margin-bottom:16px" />
     <el-form label-width="110px" :disabled="mutating">
       <el-form-item label="物资名称" required><el-input v-model="form.name" maxlength="100" /></el-form-item>
       <el-form-item label="物资条码"><el-input v-model="form.barcode" maxlength="100" clearable placeholder="可填条码，供扫码出入库使用" /></el-form-item>
@@ -253,7 +259,7 @@ onActivated(refresh)
         </el-select>
       </el-form-item>
       <el-form-item label="物资分类"><el-input v-model="form.category" /></el-form-item>
-      <el-form-item label="默认入库位置">
+      <el-form-item :label="editingMaterialId ? '默认入库位置' : '存放库房'">
         <el-select v-model="form.locationId" clearable filterable allow-create default-first-option style="width:100%" placeholder="请选择，或输入新位置后按回车" no-data-text="输入位置名称后按回车创建">
           <el-option v-for="item in locations" :key="item.id" :label="item.name" :value="item.id" />
         </el-select>

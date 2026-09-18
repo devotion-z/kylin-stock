@@ -32,6 +32,67 @@ pub struct MergeMaterialResult {
     merged: bool,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReuseMaterialResult {
+    rows_affected: u64,
+    last_insert_id: i64,
+    reused: bool,
+}
+
+pub(crate) async fn reuse_material_from_connection(
+    connection: &mut SqliteConnection,
+    id: i64,
+    name: &str,
+    unit_id: Option<i64>,
+    location_id: Option<i64>,
+) -> Result<ReuseMaterialResult, String> {
+    let mut transaction = connection
+        .begin()
+        .await
+        .map_err(|e| format!("无法关联物资库房：{e}"))?;
+    let row = sqlx::query(
+        "SELECT status,default_location_id FROM materials WHERE id=? AND name=? COLLATE NOCASE AND COALESCE(unit_id,-1)=COALESCE(?,-1)",
+    )
+    .bind(id).bind(name.trim()).bind(unit_id)
+    .fetch_optional(&mut *transaction).await.map_err(|e| format!("无法检查已有物资：{e}"))?
+    .ok_or_else(|| "物资资料已变化，请刷新后重试".to_string())?;
+    if row.get::<i64, _>("status") != 1 {
+        return Err("该物资已停用，请先在物资管理中启用原物资，再关联其他库房".into());
+    }
+    let default_location_id: Option<i64> = row.get("default_location_id");
+    // A zero balance records a warehouse association, not an inbound receipt.
+    // Existing quantities are never overwritten, including repeated submissions.
+    for location in [default_location_id, location_id].into_iter().flatten() {
+        sqlx::query(
+            "INSERT INTO inventory_balances(material_id,location_id,quantity,updated_at) VALUES (?,?,0,strftime('%Y-%m-%dT%H:%M:%fZ','now')) ON CONFLICT(material_id,location_id) DO NOTHING",
+        )
+        .bind(id).bind(location)
+        .execute(&mut *transaction).await.map_err(|e| format!("无法关联所选库房：{e}"))?;
+    }
+    transaction
+        .commit()
+        .await
+        .map_err(|e| format!("无法保存库房关联：{e}"))?;
+    Ok(ReuseMaterialResult {
+        rows_affected: 1,
+        last_insert_id: id,
+        reused: true,
+    })
+}
+
+#[tauri::command]
+pub async fn reuse_material(
+    app: AppHandle,
+    id: i64,
+    name: String,
+    unit_id: Option<i64>,
+    location_id: Option<i64>,
+) -> Result<ReuseMaterialResult, String> {
+    let mut connection = open_connection(&app).await?;
+    reuse_material_from_connection(&mut connection, id, &name, unit_id, location_id).await
+}
+
 fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
     let app_config = app
         .path_resolver()
@@ -364,6 +425,111 @@ pub async fn merge_materials(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn duplicate_create_reuses_archive_and_preserves_stock_and_metadata() {
+        let mut connection = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        sqlx::query("PRAGMA foreign_keys=ON")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        crate::migration::run_migrations_on_connection(&mut connection)
+            .await
+            .unwrap();
+        for sql in [
+            "INSERT INTO locations(id,name) VALUES (1,'1号库'),(2,'2号库')",
+            "INSERT INTO materials(id,name,unit_id,default_location_id,barcode,category,remark,created_at,updated_at) VALUES (19,'工具',3,1,'TOOL19','工具类','原备注','old','old')",
+            "INSERT INTO inventory_balances(material_id,location_id,quantity,updated_at) VALUES (19,1,20,'old')",
+        ] { sqlx::query(sql).execute(&mut connection).await.unwrap(); }
+        for _ in 0..2 {
+            let result =
+                reuse_material_from_connection(&mut connection, 19, " 工具 ", Some(3), Some(2))
+                    .await
+                    .unwrap();
+            assert!(result.reused);
+            assert_eq!(result.last_insert_id, 19);
+        }
+        let balances = sqlx::query_as::<_, (i64,f64)>("SELECT location_id,CAST(quantity AS REAL) FROM inventory_balances ORDER BY location_id").fetch_all(&mut connection).await.unwrap();
+        assert_eq!(balances, vec![(1, 20.0), (2, 0.0)]);
+        let metadata = sqlx::query_as::<_, (i64,String,String,String,String)>("SELECT default_location_id,barcode,category,remark,updated_at FROM materials WHERE id=19").fetch_one(&mut connection).await.unwrap();
+        assert_eq!(
+            metadata,
+            (
+                1,
+                "TOOL19".into(),
+                "工具类".into(),
+                "原备注".into(),
+                "old".into()
+            )
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM materials")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM stock_transactions")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap(),
+            0
+        );
+        let names = sqlx::query_scalar::<_,String>("SELECT (SELECT GROUP_CONCAT(name, '、') FROM (SELECT rl.name FROM locations rl WHERE rl.id IN (SELECT m.default_location_id UNION SELECT rb.location_id FROM inventory_balances rb WHERE rb.material_id=m.id) ORDER BY rl.name)) FROM materials m WHERE m.id=19").fetch_one(&mut connection).await.unwrap();
+        assert_eq!(names, "1号库、2号库");
+    }
+
+    #[tokio::test]
+    async fn warehouse_reuse_validates_identity_and_rolls_back_invalid_location() {
+        let mut connection = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        sqlx::query("PRAGMA foreign_keys=ON")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        crate::migration::run_migrations_on_connection(&mut connection)
+            .await
+            .unwrap();
+        for sql in [
+            "INSERT INTO locations(id,name) VALUES (1,'1号库')",
+            "INSERT INTO materials(id,name,unit_id,default_location_id,created_at,updated_at) VALUES (19,'工具',3,1,'old','old')",
+        ] { sqlx::query(sql).execute(&mut connection).await.unwrap(); }
+        assert!(
+            reuse_material_from_connection(&mut connection, 19, "工具", Some(3), Some(999))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM inventory_balances")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap(),
+            0
+        );
+        assert!(
+            reuse_material_from_connection(&mut connection, 19, "工具", Some(2), Some(1))
+                .await
+                .unwrap_err()
+                .contains("已变化")
+        );
+        sqlx::query("UPDATE materials SET status=0 WHERE id=19")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        assert!(
+            reuse_material_from_connection(&mut connection, 19, "工具", Some(3), Some(1))
+                .await
+                .unwrap_err()
+                .contains("已停用")
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM inventory_balances")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap(),
+            0
+        );
+    }
 
     #[tokio::test]
     async fn converts_sqlite_rows_to_json_without_losing_types() {

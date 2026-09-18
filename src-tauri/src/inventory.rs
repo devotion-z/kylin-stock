@@ -959,6 +959,70 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn reused_material_can_receive_and_issue_stock_in_both_warehouses() {
+        let mut connection = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        configure_connection(&mut connection).await.unwrap();
+        crate::migration::run_migrations_on_connection(&mut connection)
+            .await
+            .unwrap();
+        for sql in [
+            "INSERT INTO locations(id,name) VALUES (1,'1号库'),(2,'2号库')",
+            "INSERT INTO materials(id,name,unit_id,default_location_id,created_at,updated_at) VALUES (19,'工具',3,1,'old','old')",
+        ] { sqlx::query(sql).execute(&mut connection).await.unwrap(); }
+        let mut receipt = input(20.0);
+        receipt.material_id = 19;
+        receipt.location_id = 1;
+        stock_in_on_connection(&mut connection, &receipt)
+            .await
+            .unwrap();
+        crate::database::reuse_material_from_connection(
+            &mut connection,
+            19,
+            "工具",
+            Some(3),
+            Some(2),
+        )
+        .await
+        .unwrap();
+        receipt.location_id = 2;
+        receipt.quantity = 30.0;
+        stock_in_on_connection(&mut connection, &receipt)
+            .await
+            .unwrap();
+        receipt.quantity = 5.0;
+        receipt.destination = Some("领用单位".into());
+        for location in [1, 2] {
+            receipt.location_id = location;
+            stock_out_on_connection(&mut connection, &receipt)
+                .await
+                .unwrap();
+        }
+        let result = list_inventory_page_from_connection(
+            &mut connection,
+            InventoryPageInput {
+                keyword: Some("工具".into()),
+                unit: None,
+                location_id: None,
+                page: 1,
+                page_size: 100,
+                known_total: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.total, 2);
+        assert_eq!(
+            result
+                .rows
+                .iter()
+                .map(|r| (r.material_id, r.location_id, r.quantity))
+                .collect::<Vec<_>>(),
+            vec![(19, 1, 15.0), (19, 2, 25.0)]
+        );
+        assert_eq!(result.rows.iter().map(|r| r.quantity).sum::<f64>(), 40.0);
+    }
+
+    #[tokio::test]
     async fn corrected_unit_keeps_both_warehouses_visible_and_available_for_stock_out() {
         let mut connection = SqliteConnection::connect("sqlite::memory:").await.unwrap();
         configure_connection(&mut connection).await.unwrap();

@@ -62,12 +62,25 @@ describe('saveMaterial', () => {
     ])
   })
 
-  it('still blocks a true duplicate when creating a new material', async () => {
+  it('reuses the existing archive when adding the same name and unit in another warehouse', async () => {
     databaseMocks.select.mockResolvedValue([{ id: 27, status: 1 }])
+    databaseMocks.invoke.mockResolvedValue({ rowsAffected: 1, lastInsertId: 27, reused: true })
 
-    await expect(saveMaterial({ name: '毛巾', unitId: 3 }))
-      .rejects.toThrow('同名同计量单位物资已存在')
+    await expect(saveMaterial({ name: '毛巾', unitId: 3, locationId: 2, remark: '不覆盖原备注' }))
+      .resolves.toEqual({ rowsAffected: 1, lastInsertId: 27, reused: true })
+    expect(databaseMocks.invoke).toHaveBeenCalledWith('reuse_material', {
+      id: 27, name: '毛巾', unitId: 3, locationId: 2,
+    })
     expect(databaseMocks.execute).not.toHaveBeenCalled()
+  })
+
+  it('still creates a separate material for a different unit', async () => {
+    databaseMocks.select.mockResolvedValue([])
+    databaseMocks.execute.mockResolvedValue({ rowsAffected: 1, lastInsertId: 28 })
+    await expect(saveMaterial({ name: '毛巾', unitId: 8, locationId: 2 }))
+      .resolves.toEqual({ rowsAffected: 1, lastInsertId: 28 })
+    expect(databaseMocks.execute.mock.calls[0][0]).toContain('INSERT INTO materials')
+    expect(databaseMocks.invoke).not.toHaveBeenCalled()
   })
 
   it('merges an edited material into the matching name and unit row', async () => {

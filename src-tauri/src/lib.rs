@@ -30,6 +30,7 @@ pub fn run() {
             database::delete_location,
             database::database_select,
             database::merge_materials,
+            database::reuse_material,
             inventory::stock_in,
             inventory::stock_out,
             inventory::stock_in_batch,
