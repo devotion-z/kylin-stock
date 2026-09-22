@@ -310,7 +310,13 @@ export function buildLedgerWhere(filters: LedgerFilters = {}) {
   if (Number(filters.materialId) > 0) add('t.material_id=?', Number(filters.materialId))
   if (filters.basis?.trim()) add("COALESCE(t.adjustment_basis,'') LIKE ?", `%${filters.basis.trim()}%`)
   if (filters.type && filters.type !== 'ALL') add('t.type=?', filters.type)
-  if (filters.relatedUnit?.trim()) add("COALESCE(t.related_unit,'') LIKE ?", `%${filters.relatedUnit.trim()}%`)
+  // Older outbound records may only have `destination`; current records use
+  // `related_unit`. Treat both columns as the same user-facing party filter.
+  if (filters.relatedUnit?.trim()) {
+    const keyword = `%${filters.relatedUnit.trim()}%`
+    clauses.push("(COALESCE(t.related_unit,'') LIKE ? OR COALESCE(t.destination,'') LIKE ?)")
+    values.push(keyword, keyword)
+  }
   if (filters.destination?.trim()) add("COALESCE(t.destination,'') LIKE ?", `%${filters.destination.trim()}%`)
   if (filters.startAt) add('t.occurred_at>=?', filters.startAt)
   if (filters.endAt) add('t.occurred_at<=?', filters.endAt)

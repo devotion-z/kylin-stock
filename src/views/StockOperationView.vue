@@ -62,15 +62,15 @@ function onMaterialChange(index: number, id: number) {
   }
 }
 
-function materialLabel(item: Material) {
+function materialOption(item: Material) {
   const stocked = inventoryIndex.value.byMaterial.get(item.id) ?? []
   const location = [...new Set(stocked.filter(row => row.quantity > 0).map(row => row.location_name))].join('、')
   const available = inventoryIndex.value.totals.get(item.id) ?? 0
   const details = [item.unit_name, location, isOut.value ? `可用 ${formatQuantity(available)}` : ''].filter(Boolean).join(' · ')
-  return details ? `${item.name}（${details}）` : item.name
+  return { value: item.id, label: item.name, details }
 }
 
-const materialSelectOptions = computed(() => materials.value.map(item => ({ value: item.id, label: materialLabel(item) })))
+const materialSelectOptions = computed(() => materials.value.map(materialOption))
 
 const quantityFormatter = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 6 })
 function formatQuantity(value: number) { return quantityFormatter.format(value) }
@@ -201,7 +201,7 @@ onActivated(() => { isOut.value = route.path === '/stock-out'; void load() })
   <el-card v-loading="loading" shadow="never" class="operation-card">
     <template #header><strong>{{ isOut ? '出库登记' : '入库登记' }}</strong></template>
     <el-alert v-if="!materials.length && !loading" title="还没有可用物资，请先到“物资管理”新增并启用物资。" type="warning" :closable="false" show-icon style="margin-bottom:18px" />
-    <el-form label-width="110px" style="max-width: 720px" :disabled="submitting">
+    <el-form label-width="110px" class="operation-form" :disabled="submitting">
       <el-form-item label="扫描条码">
         <el-input ref="scanInput" v-model="scanCode" clearable placeholder="使用扫码枪扫描后自动选择物资，或手动输入条码并回车" @keyup.enter="handleScan">
           <template #append><el-button :disabled="!scanCode.trim()" @click="handleScan">识别</el-button></template>
@@ -217,7 +217,14 @@ onActivated(() => { isOut.value = route.path === '/stock-out'; void load() })
       <el-form-item :label="isOut ? '出库物资明细' : '入库物资明细'" required>
         <div class="line-list">
           <div v-for="(line, index) in lines" :key="index" class="operation-line">
-            <el-select-v2 v-model="line.materialId" :options="materialSelectOptions" filterable placeholder="物资名称" class="line-material" @change="onMaterialChange(index, line.materialId!)" />
+            <el-select-v2 v-model="line.materialId" :options="materialSelectOptions" :item-height="58" filterable placeholder="输入或选择物资名称" class="line-material" popper-class="material-select-popper" @change="onMaterialChange(index, line.materialId!)">
+              <template #default="{ item }">
+                <span class="material-option-label" :title="item.details ? `${item.label}（${item.details}）` : item.label">
+                  <span class="material-option-name">{{ item.label }}</span>
+                  <span v-if="item.details" class="material-option-details">{{ item.details }}</span>
+                </span>
+              </template>
+            </el-select-v2>
             <el-select v-model="line.locationId" filterable placeholder="存放位置" class="line-location">
               <el-option v-for="item in locations" :key="item.id" :label="locationLabel(item, line)" :value="item.id" />
             </el-select>
@@ -248,15 +255,19 @@ onActivated(() => { isOut.value = route.path === '/stock-out'; void load() })
 
 <style scoped>
 .operation-card { min-height: 560px; }
+.operation-form { max-width: 1040px; }
 .line-list { width: 100%; display: flex; flex-direction: column; gap: 10px; }
 .operation-line { display: flex; gap: 8px; align-items: center; }
-.line-material { flex: 1.5; min-width: 180px; }
-.line-location { flex: 1; min-width: 150px; }
+.line-material { flex: 2.2; min-width: 360px; }
+.line-location { flex: 1; min-width: 190px; }
 .line-quantity { width: 130px; }
+.material-option-label { display:flex; width:100%; min-width:0; flex-direction:column; justify-content:center; line-height:18px; }
+.material-option-name { white-space:normal; overflow-wrap:anywhere; }
+.material-option-details { color:var(--el-text-color-secondary); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .stock-hint { color: var(--el-text-color-secondary); font-size: 12px; }
 .scan-box { width: 100%; }
 .scan-box .el-alert { margin-top: 8px; }
 .scan-preview { margin-top: 8px; }
 .scan-hint { margin-left: 10px; color: var(--el-text-color-secondary); font-size: 12px; }
-@media (max-width: 760px) { .operation-line { flex-wrap: wrap; } .line-material, .line-location { min-width: 45%; } }
+@media (max-width: 900px) { .operation-line { flex-wrap: wrap; } .line-material { min-width: 100%; } .line-location { min-width: 45%; } }
 </style>

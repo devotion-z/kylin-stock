@@ -233,7 +233,7 @@ onMounted(() => { refresh(); loadMaterialOptions() })
         format="YYYY年MM月DD日"
         style="width:260px"
       />
-      <el-input v-model="filters.relatedUnit" :disabled="operationBusy" clearable placeholder="单位" style="width:170px" @keyup.enter="query" />
+      <el-input v-model="filters.relatedUnit" :disabled="operationBusy" clearable placeholder="领用/来源单位" style="width:210px" @keyup.enter="query" />
       <el-select v-model="filters.type" :disabled="operationBusy" placeholder="业务类型" style="width:130px">
         <el-option label="全部" value="ALL" />
         <el-option label="入库" value="IN" />
@@ -269,7 +269,7 @@ onMounted(() => { refresh(); loadMaterialOptions() })
       <el-table-column prop="unit_name" label="计量单位" width="100" />
       <el-table-column prop="quantity" label="数量" width="110" />
       <el-table-column prop="location_name" label="存放位置" min-width="130" />
-      <el-table-column prop="related_unit" label="领用/来源单位" min-width="160" />
+      <el-table-column label="领用/来源单位" min-width="160"><template #default="{ row }">{{ row.related_unit || row.destination || '-' }}</template></el-table-column>
       <el-table-column prop="handler" label="经办人" width="100" />
       <el-table-column prop="receiver" label="领用人" width="100" />
       <el-table-column label="业务日期" min-width="130"><template #default="{ row }">{{ formatBusinessDate(row.occurred_at) }}</template></el-table-column>

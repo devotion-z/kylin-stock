@@ -52,6 +52,12 @@ describe('buildLedgerWhere', () => {
   it('does not add placeholder conditions for an empty search', () => {
     expect(buildLedgerWhere({ type: 'ALL' })).toEqual({ sql: '', values: [] })
   })
+
+  it('searches both current related-unit and legacy outbound destination fields', () => {
+    const result = buildLedgerWhere({ relatedUnit: ' 一车间 ' })
+    expect(result.sql).toBe("WHERE (COALESCE(t.related_unit,'') LIKE ? OR COALESCE(t.destination,'') LIKE ?)")
+    expect(result.values).toEqual(['%一车间%', '%一车间%'])
+  })
 })
 
 describe('buildInventoryWhere', () => {
