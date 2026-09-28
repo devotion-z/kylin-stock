@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import dayjs from 'dayjs'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { deleteStockTransaction, listLedger, listLedgerPage, updateStockTransaction, type LedgerFilters, type LedgerRow } from '../services/inventory'
+import { deleteStockTransaction, listLedger, listLedgerFilterOptions, listLedgerPage, updateStockTransaction, type LedgerFilters, type LedgerRow } from '../services/inventory'
 import { listLocations, listMaterialOptions, type Location, type MaterialOption } from '../services/masterData'
 import { exportLedgerRows } from '../services/export'
 import { formatBusinessDate } from '../utils/date'
@@ -20,12 +20,14 @@ const total = ref(0)
 const currentPage = ref(1)
 const pageSize = ref(50)
 const dateRange = ref<string[]>([])
-const filters = reactive({ basis: '', materialId: undefined as number | undefined, type: 'ALL', relatedUnit: '' })
+const filters = reactive({ basisExact: '', materialId: undefined as number | undefined, type: 'ALL', relatedUnitExact: '' })
 const appliedFilters = ref<LedgerFilters>({ type: 'ALL' })
 const attachmentDialogVisible = ref(false)
 const attachmentDialogTitle = ref('单据图片')
 const attachments = ref<Attachment[]>([])
 const materialOptions = ref<MaterialOption[]>([])
+const basisOptions = ref<string[]>([])
+const relatedUnitOptions = ref<string[]>([])
 const locationOptions = ref<Location[]>([])
 const editDialogVisible = ref(false)
 const editRow = ref<LedgerRow | null>(null)
@@ -79,6 +81,14 @@ async function loadMaterialOptions() {
   try {
     ;[materialOptions.value, locationOptions.value] = await Promise.all([listMaterialOptions(), listLocations()])
   } catch (e) { ElMessage.error(`基础资料加载失败：${e instanceof Error ? e.message : String(e)}`) }
+}
+
+async function loadLedgerFilterOptions() {
+  try {
+    const options = await listLedgerFilterOptions()
+    basisOptions.value = options.bases
+    relatedUnitOptions.value = options.relatedUnits
+  } catch (e) { ElMessage.error(`筛选选项加载失败：${e instanceof Error ? e.message : String(e)}`) }
 }
 
 async function openEdit(row: LedgerRow) {
@@ -140,13 +150,14 @@ async function submitEdit() {
     editDialogVisible.value = false
     editingId.value = null
     await refresh(false)
+    await loadLedgerFilterOptions()
   } catch (e) { ElMessage.error(e instanceof Error ? e.message : String(e)) }
   finally { editingId.value = null }
 }
 
 function reset() {
   if (operationBusy.value) return
-  Object.assign(filters, { basis: '', materialId: undefined, type: 'ALL', relatedUnit: '' })
+  Object.assign(filters, { basisExact: '', materialId: undefined, type: 'ALL', relatedUnitExact: '' })
   dateRange.value = []
   appliedFilters.value = snapshotFilters()
   currentPage.value = 1
@@ -205,6 +216,7 @@ async function removeRow(row: LedgerRow) {
     deletingId.value = null
     if (rows.value.length === 1 && currentPage.value > 1) currentPage.value -= 1
     await refresh()
+    await loadLedgerFilterOptions()
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : String(e))
   } finally {
@@ -212,13 +224,15 @@ async function removeRow(row: LedgerRow) {
   }
 }
 
-onMounted(() => { refresh(); loadMaterialOptions() })
+onMounted(() => { refresh(); loadMaterialOptions(); loadLedgerFilterOptions() })
 </script>
 
 <template>
   <el-card class="ledger-card" shadow="never">
     <div class="toolbar">
-      <el-input v-model="filters.basis" :disabled="operationBusy" clearable placeholder="调拨依据" style="width:180px" @keyup.enter="query" />
+      <el-select v-model="filters.basisExact" :disabled="operationBusy" clearable filterable placeholder="调拨依据" style="width:180px">
+        <el-option v-for="basis in basisOptions" :key="basis" :label="basis" :value="basis" />
+      </el-select>
       <el-select v-model="filters.materialId" :disabled="operationBusy" clearable filterable placeholder="物资名称" style="width:180px">
         <el-option v-for="item in materialOptions" :key="item.id" :label="item.name" :value="item.id" />
       </el-select>
@@ -233,7 +247,9 @@ onMounted(() => { refresh(); loadMaterialOptions() })
         format="YYYY年MM月DD日"
         style="width:260px"
       />
-      <el-input v-model="filters.relatedUnit" :disabled="operationBusy" clearable placeholder="领用/来源单位" style="width:210px" @keyup.enter="query" />
+      <el-select v-model="filters.relatedUnitExact" :disabled="operationBusy" clearable filterable placeholder="领用/来源单位" style="width:210px">
+        <el-option v-for="unit in relatedUnitOptions" :key="unit" :label="unit" :value="unit" />
+      </el-select>
       <el-select v-model="filters.type" :disabled="operationBusy" placeholder="业务类型" style="width:130px">
         <el-option label="全部" value="ALL" />
         <el-option label="入库" value="IN" />

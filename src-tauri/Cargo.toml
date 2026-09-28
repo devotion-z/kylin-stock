@@ -1,6 +1,6 @@
 [package]
 name = "kylin-stock"
-version = "0.1.16"
+version = "0.1.17"
 description = "KylinStock material inventory management desktop application"
 authors = ["devotionn"]
 edition = "2021"

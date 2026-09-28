@@ -58,6 +58,12 @@ describe('buildLedgerWhere', () => {
     expect(result.sql).toBe("WHERE (COALESCE(t.related_unit,'') LIKE ? OR COALESCE(t.destination,'') LIKE ?)")
     expect(result.values).toEqual(['%一车间%', '%一车间%'])
   })
+
+  it('matches selected basis and displayed related unit exactly, including legacy destinations', () => {
+    const result = buildLedgerWhere({ basisExact: ' 领料单 01 ', relatedUnitExact: ' 一车间 ' })
+    expect(result.sql).toBe("WHERE TRIM(t.adjustment_basis)=? AND COALESCE(NULLIF(TRIM(t.related_unit),''),NULLIF(TRIM(t.destination),''))=?")
+    expect(result.values).toEqual(['领料单 01', '一车间'])
+  })
 })
 
 describe('buildInventoryWhere', () => {

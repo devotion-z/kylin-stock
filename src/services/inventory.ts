@@ -65,9 +65,11 @@ export interface InventoryPage {
 
 export interface LedgerFilters {
   basis?: string
+  basisExact?: string
   materialId?: number
   type?: string
   relatedUnit?: string
+  relatedUnitExact?: string
   destination?: string
   startAt?: string
   endAt?: string
@@ -78,6 +80,11 @@ export interface LedgerPage {
   total: number
   page: number
   pageSize: number
+}
+
+export interface LedgerFilterOptions {
+  bases: string[]
+  relatedUnits: string[]
 }
 
 export interface StockOperationInput {
@@ -309,6 +316,7 @@ export function buildLedgerWhere(filters: LedgerFilters = {}) {
 
   if (Number(filters.materialId) > 0) add('t.material_id=?', Number(filters.materialId))
   if (filters.basis?.trim()) add("COALESCE(t.adjustment_basis,'') LIKE ?", `%${filters.basis.trim()}%`)
+  if (filters.basisExact?.trim()) add('TRIM(t.adjustment_basis)=?', filters.basisExact.trim())
   if (filters.type && filters.type !== 'ALL') add('t.type=?', filters.type)
   // Older outbound records may only have `destination`; current records use
   // `related_unit`. Treat both columns as the same user-facing party filter.
@@ -316,6 +324,9 @@ export function buildLedgerWhere(filters: LedgerFilters = {}) {
     const keyword = `%${filters.relatedUnit.trim()}%`
     clauses.push("(COALESCE(t.related_unit,'') LIKE ? OR COALESCE(t.destination,'') LIKE ?)")
     values.push(keyword, keyword)
+  }
+  if (filters.relatedUnitExact?.trim()) {
+    add("COALESCE(NULLIF(TRIM(t.related_unit),''),NULLIF(TRIM(t.destination),''))=?", filters.relatedUnitExact.trim())
   }
   if (filters.destination?.trim()) add("COALESCE(t.destination,'') LIKE ?", `%${filters.destination.trim()}%`)
   if (filters.startAt) add('t.occurred_at>=?', filters.startAt)
@@ -334,6 +345,22 @@ const ledgerColumnsSql = `
   SELECT t.id,t.transaction_no,t.type,t.material_id,m.name AS material_name,u.name AS unit_name,
          t.location_id,l.name AS location_name,t.quantity,t.occurred_at,t.related_unit,t.destination,
          t.handler,t.receiver,t.remark,t.adjustment_basis`
+
+export async function listLedgerFilterOptions(): Promise<LedgerFilterOptions> {
+  return withDatabaseRead(async () => {
+    const db = await getDatabase()
+    const [bases, relatedUnits] = await Promise.all([
+      db.select<{ value: string }[]>(`SELECT DISTINCT TRIM(adjustment_basis) AS value
+        FROM stock_transactions WHERE adjustment_basis IS NOT NULL AND TRIM(adjustment_basis)<>''
+        ORDER BY value COLLATE NOCASE`),
+      db.select<{ value: string }[]>(`SELECT DISTINCT COALESCE(NULLIF(TRIM(related_unit),''),NULLIF(TRIM(destination),'')) AS value
+        FROM stock_transactions
+        WHERE COALESCE(NULLIF(TRIM(related_unit),''),NULLIF(TRIM(destination),'')) IS NOT NULL
+        ORDER BY value COLLATE NOCASE`),
+    ])
+    return { bases: bases.map(item => item.value), relatedUnits: relatedUnits.map(item => item.value) }
+  })
+}
 
 export async function listLedgerPage(
   filters: LedgerFilters = {},
