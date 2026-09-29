@@ -56,6 +56,14 @@ command_value 'GTK 3' pkg-config --modversion gtk+-3.0
 command_value 'OpenSSL' pkg-config --modversion openssl
 command_value 'Ayatana AppIndicator' pkg-config --modversion ayatana-appindicator3-0.1
 
+section "Document OCR"
+command_value 'Tesseract OCR' tesseract --version
+if command -v tesseract >/dev/null 2>&1 && tesseract --list-langs 2>&1 | grep -Fxq chi_sim; then
+  echo 'Simplified Chinese OCR: PASS'
+else
+  echo 'Simplified Chinese OCR: WARNING - chi_sim language data is unavailable'
+fi
+
 section "Installed WebKit / GTK Packages"
 if command -v dpkg >/dev/null 2>&1; then
   dpkg -l 2>/dev/null | grep -E 'webkit2gtk|libgtk-3|appindicator|librsvg' || true

@@ -9,10 +9,13 @@ import AttachmentField from '../components/AttachmentField.vue'
 import { addAttachment, chooseAttachmentImages } from '../services/attachments'
 import { ensureBusinessOption, listBusinessOptions, type BusinessOption } from '../services/businessOptions'
 import { parseQuantityInput } from '../utils/quantity'
+import { recognizeTransferNotice } from '../services/documentRecognition'
 
 const route = useRoute()
 const isOut = ref(route.path === '/stock-out')
 const submitting = ref(false)
+const recognizing = ref(false)
+const scanReviewConfirmed = ref(false)
 const loading = ref(false)
 const materials = ref<Material[]>([])
 const locations = ref<Location[]>([])
@@ -24,9 +27,9 @@ const scanCode = ref('')
 const scanTextPreview = ref('')
 const scanMatchedCount = ref(0)
 const scanInput = ref<{ focus: () => void }>()
-interface OperationLine { materialId?: number; locationId?: number; quantity: string }
+interface OperationLine { materialId?: number; locationId?: number; quantity: string; recognizedName?: string; specification?: string; recognizedUnit?: string }
 const lines = ref<OperationLine[]>([{ quantity: '1' }])
-const form = reactive({ occurredAt: toLocalDateValue(), adjustmentBasis: '', relatedUnit: '', handler: '', receiver: '', remark: '' })
+const form = reactive({ occurredAt: toLocalDateValue(), adjustmentBasis: '', relatedUnit: '', receivingUnit: '', handler: '', receiver: '', remark: '' })
 let loadRevision = 0
 
 async function load() {
@@ -103,54 +106,73 @@ function handleScan() {
 }
 
 async function importScannedDocument() {
+  if (recognizing.value || submitting.value) return
+  recognizing.value = true
   try {
     const selected = await chooseAttachmentImages()
     if (!selected.length) return
-    const text = await scanDocument(selected[0])
-    scanTextPreview.value = text.trim()
-    const detected: OperationLine[] = []
-    const textLines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
-    for (const material of materials.value) {
-      const matched = textLines.find((line) => line.includes(material.name))
-      if (!matched) continue
-      const numbers = matched.match(/\d+(?:[.,]\d+)?/g) ?? []
-      const rawQuantity = numbers.length ? numbers[numbers.length - 1].replace(',', '.') : '1'
-      const quantity = rawQuantity.replace(/\.0+$/, '').replace(/(\.\d*?[1-9])0+$/, '$1')
-      detected.push({ materialId: material.id, locationId: material.default_location_id ?? undefined, quantity })
+    const scanned = await scanDocument(selected[0])
+    const notice = recognizeTransferNotice(scanned, materials.value)
+    if (notice.isTransferNotice && isOut.value) {
+      return ElMessage.warning('这是调拨接收单，请在“入库登记”页面导入并核对')
     }
-    scanMatchedCount.value = detected.length
+    scanTextPreview.value = scanned.text.trim() || '未生成完整原文，请逐项核对识别结果'
+    scanReviewConfirmed.value = false
+    const detected: OperationLine[] = []
+    if (notice.isTransferNotice) {
+      for (const item of notice.lines) detected.push({
+        materialId: item.materialId, locationId: item.locationId, quantity: item.quantity,
+        recognizedName: item.name, specification: item.specification, recognizedUnit: item.unit,
+      })
+      form.adjustmentBasis = notice.basis
+      form.relatedUnit = notice.supplier
+      form.receivingUnit = notice.receivingUnit
+    } else {
+      const textLines = scanned.text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+      for (const material of materials.value) {
+        const matched = textLines.find((line) => line.includes(material.name))
+        if (!matched) continue
+        const numbers = matched.match(/\d+(?:[.,]\d+)?/g) ?? []
+        const quantity = numbers.length ? numbers[numbers.length - 1].replace(/,/g, '') : ''
+        detected.push({ materialId: material.id, locationId: material.default_location_id ?? undefined, quantity, recognizedName: material.name })
+      }
+    }
+    scanMatchedCount.value = detected.filter(item => item.materialId && item.quantity).length
     pendingAttachments.value = [...new Set([...pendingAttachments.value, selected[0]])].slice(0, 10)
     if (detected.length) {
       lines.value = detected
-      ElMessage.success(`单据识别完成，匹配到 ${detected.length} 项物资，请核对数量后确认`)
+      ElMessage.success(`单据识别完成，提取 ${detected.length} 行；请核对物资、规格、数量和单位后确认${isOut.value ? '出库' : '入库'}`)
     } else {
-      ElMessage.warning('单据图片已添加，但未匹配到物资名称，请检查物资名称或手动补充明细')
+      ElMessage.warning('单据图片已添加，但未可靠识别出明细，请手动填写后确认')
     }
   } catch (e) { ElMessage.error(e instanceof Error ? e.message : String(e)) }
+  finally { recognizing.value = false }
 }
 
 function reset() {
   if (submitting.value) return
-  Object.assign(form, { occurredAt: toLocalDateValue(), adjustmentBasis: '', relatedUnit: '', handler: '', receiver: '', remark: '' })
+  Object.assign(form, { occurredAt: toLocalDateValue(), adjustmentBasis: '', relatedUnit: '', receivingUnit: '', handler: '', receiver: '', remark: '' })
   lines.value = [{ quantity: '1' }]
   pendingAttachments.value = []
   scanCode.value = ''
   scanTextPreview.value = ''
   scanMatchedCount.value = 0
+  scanReviewConfirmed.value = false
 }
 
 async function submit() {
   // Loading state alone is not a correctness guard: two click events can enter
   // this function before Vue has rendered the disabled/loading button state.
-  if (submitting.value) return
+  if (submitting.value || recognizing.value) return
+  if (scanTextPreview.value && !scanReviewConfirmed.value) return ElMessage.warning('请先核对扫描结果并勾选确认')
   if (!lines.value.length) return ElMessage.warning('请至少添加一项物资')
   if (!form.occurredAt) return ElMessage.warning('请选择业务日期')
-  const parsedLines = [] as Array<{ materialId: number; locationId: number; quantity: number }>
+  const parsedLines = [] as Array<{ materialId: number; locationId: number; quantity: number; specification?: string }>
   for (let index = 0; index < lines.value.length; index += 1) {
     const line = lines.value[index]
     if (!line.materialId) return ElMessage.warning(`第 ${index + 1} 行请选择物资`)
     if (!line.locationId) return ElMessage.warning(`第 ${index + 1} 行请选择存放位置`)
-    try { parsedLines.push({ materialId: line.materialId, locationId: line.locationId, quantity: parseQuantityInput(line.quantity) }) }
+    try { parsedLines.push({ materialId: line.materialId, locationId: line.locationId, quantity: parseQuantityInput(line.quantity), specification: line.specification }) }
     catch (e) { return ElMessage.warning(`第 ${index + 1} 行：${e instanceof Error ? e.message : String(e)}`) }
   }
   if (isOut.value && !form.relatedUnit.trim()) return ElMessage.warning('请填写领用单位')
@@ -159,28 +181,33 @@ async function submit() {
   try {
     const relatedUnit = await ensureBusinessOption('RELATED_UNIT', form.relatedUnit)
     const destination = isOut.value ? form.relatedUnit.trim() : ''
-    const payload = parsedLines.map((line) => ({ ...line, occurredAt: `${form.occurredAt}T00:00:00.000Z`, adjustmentBasis: form.adjustmentBasis, relatedUnit, destination, handler: form.handler, receiver: form.receiver, remark: form.remark }))
+    const payload = parsedLines.map((line) => ({
+      ...line, occurredAt: `${form.occurredAt}T00:00:00.000Z`, adjustmentBasis: form.adjustmentBasis,
+      relatedUnit, destination, handler: form.handler, receiver: form.receiver,
+      remark: [form.remark.trim(), form.receivingUnit.trim() ? `接收单位：${form.receivingUnit.trim()}` : '', line.specification?.trim() ? `规格型号：${line.specification.trim()}` : ''].filter(Boolean).join('；'),
+    }))
     const transactionNos = isOut.value ? await stockOutBatch(payload) : await stockInBatch(payload)
     let attachmentWarning = ''
     if (pendingAttachments.value.length) {
-      const transactionId = await getTransactionIdByNo(transactionNos[0])
       try {
-        while (pendingAttachments.value.length) {
-          await addAttachment('TRANSACTION', transactionId, pendingAttachments.value[0])
-          pendingAttachments.value.shift()
+        for (const transactionNo of transactionNos) {
+          const transactionId = await getTransactionIdByNo(transactionNo)
+          for (const path of pendingAttachments.value) await addAttachment('TRANSACTION', transactionId, path)
         }
+        pendingAttachments.value = []
       } catch (e) {
         attachmentWarning = e instanceof Error ? e.message : String(e)
       }
     }
     if (attachmentWarning) ElMessage.warning(`登记已成功，但有单据图片未保存：${attachmentWarning}。可到“出入库明细－编辑”中重新添加`)
     else ElMessage.success(isOut.value ? '出库登记成功' : '入库登记成功')
-    Object.assign(form, { occurredAt: toLocalDateValue(), adjustmentBasis: '', relatedUnit: '', handler: '', receiver: '', remark: '' })
+    Object.assign(form, { occurredAt: toLocalDateValue(), adjustmentBasis: '', relatedUnit: '', receivingUnit: '', handler: '', receiver: '', remark: '' })
     lines.value = [{ quantity: '1' }]
     pendingAttachments.value = []
     scanCode.value = ''
     scanTextPreview.value = ''
     scanMatchedCount.value = 0
+    scanReviewConfirmed.value = false
     relatedUnitOptions.value = await listBusinessOptions('RELATED_UNIT')
     inventoryRows.value = await listInventory()
   } catch (e) { ElMessage.error(e instanceof Error ? e.message : String(e)) }
@@ -209,9 +236,10 @@ onActivated(() => { isOut.value = route.path === '/stock-out'; void load() })
       </el-form-item>
       <el-form-item label="扫描单据">
         <div class="scan-box">
-          <div><el-button plain :disabled="submitting" @click="importScannedDocument">选择扫描单据并识别</el-button><span class="scan-hint">支持扫描图片；识别后自动填充物资和数量，提交前必须人工核对</span></div>
-          <el-alert v-if="scanTextPreview" :title="`已识别 ${scanMatchedCount} 项物资，原始文字仅供核对`" type="success" :closable="false" show-icon />
+          <div><el-button plain :disabled="submitting || recognizing" :loading="recognizing" @click="importScannedDocument">选择扫描单据并识别</el-button><span class="scan-hint">支持调拨接收通知单图片；识别后核对黄色标记内容，再确认入库</span></div>
+          <el-alert v-if="scanTextPreview" :title="`已提取 ${scanMatchedCount} 项物资和数量；请逐项核对，尤其是单位名称`" type="warning" :closable="false" show-icon />
           <el-input v-if="scanTextPreview" v-model="scanTextPreview" type="textarea" :rows="4" readonly class="scan-preview" />
+          <el-checkbox v-if="scanTextPreview" v-model="scanReviewConfirmed">我已核对调拨依据、双方单位、物资、规格和数量</el-checkbox>
         </div>
       </el-form-item>
       <el-form-item :label="isOut ? '出库物资明细' : '入库物资明细'" required>
@@ -230,6 +258,10 @@ onActivated(() => { isOut.value = route.path === '/stock-out'; void load() })
             </el-select>
             <el-input v-model="line.quantity" inputmode="decimal" maxlength="18" placeholder="数量" class="line-quantity" />
             <el-button link type="danger" :disabled="lines.length === 1" @click="removeLine(index)">删除</el-button>
+            <div v-if="line.recognizedName !== undefined" class="recognized-line">
+              识别名称：{{ line.recognizedName || '未识别' }}<span v-if="line.recognizedUnit"> · 单位：{{ line.recognizedUnit }}</span>
+              <el-input v-model="line.specification" clearable placeholder="规格型号（请核对）" class="line-specification" />
+            </div>
           </div>
           <div v-if="isOut && lines.some(line => line.materialId && line.locationId)" class="stock-hint">
             库存按“物资＋库房”实时显示；选择物资后会优先带出有库存的库房。
@@ -244,11 +276,12 @@ onActivated(() => { isOut.value = route.path === '/stock-out'; void load() })
           <el-option v-for="item in relatedUnitOptions" :key="item.id" :label="item.name" :value="item.name" />
         </el-select>
       </el-form-item>
+      <el-form-item v-if="scanTextPreview && !isOut" label="接收单位"><el-input v-model="form.receivingUnit" clearable placeholder="核对单据上的接收单位；保存后写入备注" /></el-form-item>
       <el-form-item label="经办人"><el-input v-model="form.handler" /></el-form-item>
       <el-form-item v-if="isOut" label="领用人"><el-input v-model="form.receiver" /></el-form-item>
       <el-form-item label="备注"><el-input v-model="form.remark" type="textarea" :rows="3" /></el-form-item>
       <el-form-item label="单据图片"><AttachmentField v-model:pending="pendingAttachments" :attachments="[]" :disabled="submitting" /></el-form-item>
-      <el-form-item><el-button type="primary" :disabled="submitting || !materials.length || !locations.length" :loading="submitting" @click="submit">确认{{ isOut ? '出库' : '入库' }}</el-button><el-button :disabled="submitting" @click="reset">重置</el-button></el-form-item>
+      <el-form-item><el-button type="primary" :disabled="submitting || recognizing || !materials.length || !locations.length || (!!scanTextPreview && !scanReviewConfirmed)" :loading="submitting" @click="submit">确认{{ isOut ? '出库' : '入库' }}</el-button><el-button :disabled="submitting || recognizing" @click="reset">重置</el-button></el-form-item>
     </el-form>
   </el-card>
 </template>
@@ -257,10 +290,12 @@ onActivated(() => { isOut.value = route.path === '/stock-out'; void load() })
 .operation-card { min-height: 560px; }
 .operation-form { max-width: 1040px; }
 .line-list { width: 100%; display: flex; flex-direction: column; gap: 10px; }
-.operation-line { display: flex; gap: 8px; align-items: center; }
+.operation-line { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .line-material { flex: 2.2; min-width: 360px; }
 .line-location { flex: 1; min-width: 190px; }
 .line-quantity { width: 130px; }
+.recognized-line { flex-basis:100%; color:var(--el-text-color-secondary); font-size:12px; padding-left:4px; }
+.line-specification { display:inline-block; width:230px; margin-left:10px; }
 .material-option-label { display:flex; width:100%; min-width:0; flex-direction:column; justify-content:center; line-height:18px; }
 .material-option-name { white-space:normal; overflow-wrap:anywhere; }
 .material-option-details { color:var(--el-text-color-secondary); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }

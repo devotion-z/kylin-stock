@@ -898,8 +898,14 @@ pub async fn delete_inventory_position(
 /// Run the optional system OCR engine against a scanned transfer document.
 /// Kylin deployments can install tesseract-ocr-chi-sim; the UI treats the
 /// returned text as a draft and always lets the operator verify quantities.
+#[derive(Serialize)]
+pub struct ScanDocumentResult {
+    text: String,
+    tsv: String,
+}
+
 #[tauri::command]
-pub async fn scan_document(source_path: String) -> Result<String, String> {
+pub async fn scan_document(source_path: String) -> Result<ScanDocumentResult, String> {
     let path = source_path.trim();
     if path.is_empty() {
         return Err("请选择扫描单据图片".into());
@@ -930,17 +936,20 @@ pub async fn scan_document(source_path: String) -> Result<String, String> {
     ));
     fs::copy(&source, &temporary).map_err(|error| format!("无法准备扫描单据：{error}"))?;
     let temporary_path = temporary.to_string_lossy().to_string();
-    let output = Command::new("tesseract")
-        .args([
-            temporary_path.as_str(),
-            "stdout",
-            "-l",
-            "chi_sim+eng",
-            "--psm",
-            "6",
-        ])
-        .output()
-        .map_err(|_| "未检测到 OCR 引擎，请在麒麟系统安装 tesseract-ocr 和中文语言包".to_string());
+    let recognize = |page_mode: &str, output_format: Option<&str>| {
+        let mut command = Command::new("tesseract");
+        command.args([temporary_path.as_str(), "stdout", "-l", "chi_sim+eng", "--psm", page_mode]);
+        if let Some(format) = output_format {
+            command.arg(format);
+        }
+        command.output().map_err(|_| "未检测到 OCR 引擎，请在麒麟系统安装 tesseract-ocr 和中文语言包".to_string())
+    };
+    let output = recognize("6", None);
+    let layout = if output.as_ref().is_ok_and(|value| value.status.success()) {
+        Some(recognize("11", Some("tsv")))
+    } else {
+        None
+    };
     let _ = fs::remove_file(&temporary);
     let output = output?;
     if !output.status.success() {
@@ -951,7 +960,15 @@ pub async fn scan_document(source_path: String) -> Result<String, String> {
             format!("扫描单据识别失败：{detail}")
         });
     }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    let layout = layout.expect("successful text recognition must request layout")?;
+    if !layout.status.success() {
+        let detail = String::from_utf8_lossy(&layout.stderr).trim().to_string();
+        return Err(format!("扫描单据表格识别失败：{detail}"));
+    }
+    Ok(ScanDocumentResult {
+        text: String::from_utf8_lossy(&output.stdout).to_string(),
+        tsv: String::from_utf8_lossy(&layout.stdout).to_string(),
+    })
 }
 
 #[cfg(test)]

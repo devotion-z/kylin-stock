@@ -187,8 +187,10 @@ export function deleteInventoryPosition(materialId: number, locationId: number) 
   return withDatabaseMutation(() => invoke<void>('delete_inventory_position', { materialId, locationId }))
 }
 
+export interface ScanDocumentResult { text: string; tsv: string }
+
 export function scanDocument(sourcePath: string) {
-  return invoke<string>('scan_document', { sourcePath })
+  return invoke<ScanDocumentResult>('scan_document', { sourcePath })
 }
 
 export function sortInventoryByLocation(rows: InventoryRow[]) {

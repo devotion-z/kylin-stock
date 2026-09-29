@@ -95,13 +95,18 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             xvfb \
-            dbus-x11
+            dbus-x11 \
+            tesseract-ocr \
+            tesseract-ocr-chi-sim
 
       - name: Install locked frontend dependencies
         run: npm ci --no-audit --no-fund
 
       - name: Verify locked Rust dependency graph
         run: cargo metadata --locked --manifest-path src-tauri/Cargo.toml --no-deps > /dev/null
+
+      - name: Verify Chinese OCR language data
+        run: tesseract --list-langs 2>&1 | grep -Fx chi_sim
 
       - name: Build native ARM64 deb smoke package
         run: ./scripts/build-deb.sh
@@ -124,9 +129,10 @@ jobs:
             "$PACKAGE" "$VERSION" "$ARCH" "$DEPENDS"
 
           test "$PACKAGE" = "kylin-stock"
-          test "$VERSION" = "0.1.17"
+          test "$VERSION" = "0.1.18"
           test "$ARCH" = "arm64"
           printf '%s\n' "$DEPENDS" | grep -F 'libwebkit2gtk-4.0-37'
+          printf '%s\n' "$DEPENDS" | grep -F 'tesseract-ocr-chi-sim'
           if printf '%s\n' "$DEPENDS" | grep -F 'libwebkit2gtk-4.1-0'; then
             echo 'Kylin-incompatible WebKitGTK 4.1 dependency detected' >&2
             exit 1
