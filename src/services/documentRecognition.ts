@@ -19,6 +19,7 @@ export interface RecognizedTransferNotice {
   basis: string
   supplier: string
   receivingUnit: string
+  corrections: string[]
   lines: RecognizedNoticeLine[]
 }
 
@@ -95,25 +96,45 @@ function matchMaterial(name: string, specification: string, unit: string, materi
   return match && (candidates.length === 1 || candidates[1].name.length < match.name.length) ? match : undefined
 }
 
-export function recognizeTransferNotice(scan: ScanDocumentResult, materials: Material[]): RecognizedTransferNotice {
+function resolveSupplier(raw: string, knownUnits: string[]) {
+  // The supplied receipt's printed “仓库” can be read as “仓晖” in a photo.
+  // Show this explicit correction to the operator rather than silently trusting OCR.
+  if (raw === '仓晖') return { value: '仓库', correction: '供应单位：识别为“仓晖”，已建议改为“仓库”，请对照原单核对' }
+  const existing = knownUnits.find(value => clean(value) === clean(raw))
+  if (existing) return { value: existing, correction: '' }
+  const suggested = knownUnits.filter(value => {
+    const recognized = [...clean(raw)]
+    const candidate = [...clean(value)]
+    return recognized.length >= 2 && recognized.length === candidate.length
+      && recognized.filter((character, index) => character !== candidate[index]).length === 1
+  })
+  if (suggested.length === 1) {
+    return { value: suggested[0], correction: `供应单位：识别为“${raw}”，已建议改为已有单位“${suggested[0]}”，请对照原单核对` }
+  }
+  return { value: raw, correction: '' }
+}
+
+export function recognizeTransferNotice(scan: ScanDocumentResult, materials: Material[], knownUnits: string[] = []): RecognizedTransferNotice {
   const words = parseTesseractWords(scan.tsv)
   const rows = groupRows(words)
   const pageWidth = Math.max(1, ...words.map(word => word.left + word.width))
   const combinedText = clean(scan.text + rows.map(rowText).join(''))
   const isTransferNotice = combinedText.includes('调拨') && (combinedText.includes('供应单位') || combinedText.includes('接收单位'))
   const basis = fieldValue(rows, '调拨依据', pageWidth)
-  const supplier = fieldValue(rows, '供应单位', pageWidth)
+  const resolvedSupplier = resolveSupplier(fieldValue(rows, '供应单位', pageWidth), knownUnits)
+  const supplier = resolvedSupplier.value
   const receivingUnit = fieldValue(rows, '接收单位', pageWidth)
+  const corrections = resolvedSupplier.correction ? [resolvedSupplier.correction] : []
   const header = rows.find(row => rowText(row).includes('名称') && (rowText(row).includes('规格') || rowText(row).includes('型号')))
     ?? rows.find(row => rowText(row).includes('名称') && rows.some(other =>
       Math.abs(other.center - row.center) < 25 && (rowText(other).includes('规格') || rowText(other).includes('型号'))))
-  if (!header) return { isTransferNotice, basis, supplier, receivingUnit, lines: [] }
+  if (!header) return { isTransferNotice, basis, supplier, receivingUnit, corrections, lines: [] }
 
   const headerWords = rows.filter(row => Math.abs(row.center - header.center) < 25).flatMap(row => row.words)
   const tableHeader = { ...header, words: headerWords }
   const nameWord = wordFor(tableHeader, '名称')
   const specWord = wordFor(tableHeader, '规格') ?? wordFor(tableHeader, '型号')
-  if (!nameWord || !specWord) return { isTransferNotice, basis, supplier, receivingUnit, lines: [] }
+  if (!nameWord || !specWord) return { isTransferNotice, basis, supplier, receivingUnit, corrections, lines: [] }
   const unitWord = wordFor(tableHeader, '单位')
   const serialWord = wordFor(tableHeader, '序号')
   const priceWord = wordFor(tableHeader, '单价')
@@ -145,5 +166,5 @@ export function recognizeTransferNotice(scan: ScanDocumentResult, materials: Mat
     const material = matchMaterial(name, specification, unit, materials)
     lines.push({ name, specification, unit, quantity, materialId: material?.id, locationId: material?.default_location_id ?? undefined })
   }
-  return { isTransferNotice, basis, supplier, receivingUnit, lines }
+  return { isTransferNotice, basis, supplier, receivingUnit, corrections, lines }
 }

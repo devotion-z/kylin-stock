@@ -129,7 +129,7 @@ jobs:
             "$PACKAGE" "$VERSION" "$ARCH" "$DEPENDS"
 
           test "$PACKAGE" = "kylin-stock"
-          test "$VERSION" = "0.1.18"
+          test "$VERSION" = "0.1.19"
           test "$ARCH" = "arm64"
           printf '%s\n' "$DEPENDS" | grep -F 'libwebkit2gtk-4.0-37'
           printf '%s\n' "$DEPENDS" | grep -F 'tesseract-ocr-chi-sim'

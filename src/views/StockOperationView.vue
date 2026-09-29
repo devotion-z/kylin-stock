@@ -26,6 +26,8 @@ const relatedUnitOptions = ref<BusinessOption[]>([])
 const scanCode = ref('')
 const scanTextPreview = ref('')
 const scanMatchedCount = ref(0)
+const scanCorrections = ref<string[]>([])
+const scanIsTransferNotice = ref(false)
 const scanInput = ref<{ focus: () => void }>()
 interface OperationLine { materialId?: number; locationId?: number; quantity: string; recognizedName?: string; specification?: string; recognizedUnit?: string }
 const lines = ref<OperationLine[]>([{ quantity: '1' }])
@@ -112,12 +114,14 @@ async function importScannedDocument() {
     const selected = await chooseAttachmentImages()
     if (!selected.length) return
     const scanned = await scanDocument(selected[0])
-    const notice = recognizeTransferNotice(scanned, materials.value)
+    const notice = recognizeTransferNotice(scanned, materials.value, relatedUnitOptions.value.map(item => item.name))
     if (notice.isTransferNotice && isOut.value) {
       return ElMessage.warning('这是调拨接收单，请在“入库登记”页面导入并核对')
     }
     scanTextPreview.value = scanned.text.trim() || '未生成完整原文，请逐项核对识别结果'
     scanReviewConfirmed.value = false
+    scanCorrections.value = notice.corrections
+    scanIsTransferNotice.value = notice.isTransferNotice
     const detected: OperationLine[] = []
     if (notice.isTransferNotice) {
       for (const item of notice.lines) detected.push({
@@ -158,6 +162,8 @@ function reset() {
   scanTextPreview.value = ''
   scanMatchedCount.value = 0
   scanReviewConfirmed.value = false
+  scanCorrections.value = []
+  scanIsTransferNotice.value = false
 }
 
 async function submit() {
@@ -167,6 +173,9 @@ async function submit() {
   if (scanTextPreview.value && !scanReviewConfirmed.value) return ElMessage.warning('请先核对扫描结果并勾选确认')
   if (!lines.value.length) return ElMessage.warning('请至少添加一项物资')
   if (!form.occurredAt) return ElMessage.warning('请选择业务日期')
+  if (scanIsTransferNotice.value && (!form.adjustmentBasis.trim() || !form.relatedUnit.trim() || !form.receivingUnit.trim())) {
+    return ElMessage.warning('请核对并补全调拨依据、供应单位和接收单位')
+  }
   const parsedLines = [] as Array<{ materialId: number; locationId: number; quantity: number; specification?: string }>
   for (let index = 0; index < lines.value.length; index += 1) {
     const line = lines.value[index]
@@ -208,6 +217,8 @@ async function submit() {
     scanTextPreview.value = ''
     scanMatchedCount.value = 0
     scanReviewConfirmed.value = false
+    scanCorrections.value = []
+    scanIsTransferNotice.value = false
     relatedUnitOptions.value = await listBusinessOptions('RELATED_UNIT')
     inventoryRows.value = await listInventory()
   } catch (e) { ElMessage.error(e instanceof Error ? e.message : String(e)) }
@@ -238,6 +249,7 @@ onActivated(() => { isOut.value = route.path === '/stock-out'; void load() })
         <div class="scan-box">
           <div><el-button plain :disabled="submitting || recognizing" :loading="recognizing" @click="importScannedDocument">选择扫描单据并识别</el-button><span class="scan-hint">支持调拨接收通知单图片；识别后核对黄色标记内容，再确认入库</span></div>
           <el-alert v-if="scanTextPreview" :title="`已提取 ${scanMatchedCount} 项物资和数量；请逐项核对，尤其是单位名称`" type="warning" :closable="false" show-icon />
+          <el-alert v-for="correction in scanCorrections" :key="correction" :title="correction" type="warning" :closable="false" show-icon />
           <el-input v-if="scanTextPreview" v-model="scanTextPreview" type="textarea" :rows="4" readonly class="scan-preview" />
           <el-checkbox v-if="scanTextPreview" v-model="scanReviewConfirmed">我已核对调拨依据、双方单位、物资、规格和数量</el-checkbox>
         </div>
@@ -270,13 +282,13 @@ onActivated(() => { isOut.value = route.path === '/stock-out'; void load() })
         </div>
       </el-form-item>
       <el-form-item label="业务日期" required><el-date-picker v-model="form.occurredAt" type="date" value-format="YYYY-MM-DD" format="YYYY年MM月DD日" :editable="false" placeholder="选择年月日" style="width:100%" /></el-form-item>
-      <el-form-item label="调拨依据"><el-input v-model="form.adjustmentBasis" clearable placeholder="例如：调拨单号、领料单号、采购单号" /></el-form-item>
-      <el-form-item :label="isOut ? '领用单位' : '来源单位'">
+      <el-form-item label="调拨依据" :required="scanIsTransferNotice"><el-input v-model="form.adjustmentBasis" clearable placeholder="例如：调拨单号、领料单号、采购单号" /></el-form-item>
+      <el-form-item :label="isOut ? '领用单位' : '来源单位'" :required="scanIsTransferNotice">
         <el-select v-model="form.relatedUnit" clearable filterable allow-create default-first-option style="width:100%" placeholder="选择，或输入新单位后按回车">
           <el-option v-for="item in relatedUnitOptions" :key="item.id" :label="item.name" :value="item.name" />
         </el-select>
       </el-form-item>
-      <el-form-item v-if="scanTextPreview && !isOut" label="接收单位"><el-input v-model="form.receivingUnit" clearable placeholder="核对单据上的接收单位；保存后写入备注" /></el-form-item>
+      <el-form-item v-if="scanTextPreview && !isOut" label="接收单位" :required="scanIsTransferNotice"><el-input v-model="form.receivingUnit" clearable placeholder="核对单据上的接收单位；保存后写入备注" /></el-form-item>
       <el-form-item label="经办人"><el-input v-model="form.handler" /></el-form-item>
       <el-form-item v-if="isOut" label="领用人"><el-input v-model="form.receiver" /></el-form-item>
       <el-form-item label="备注"><el-input v-model="form.remark" type="textarea" :rows="3" /></el-form-item>

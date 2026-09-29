@@ -16,10 +16,10 @@ const materials = [
 describe('recognizeTransferNotice', () => {
   it('reads the highlighted receipt fields and planned quantity column without using price or actual quantity', () => {
     const scan = {
-      text: '调拨（接收）通知单\n调拨依据 2026年计划\n供应单位 仓库\n接收单位 超市',
+      text: '调拨（接收）通知单\n调拨依据 2026年计划\n供应单位 仓晖\n接收单位 超市',
       tsv: tsv([
         ['调拨依据', 535, 250, 58], ['2026年计划', 600, 250, 115],
-        ['供应单位', 5, 285, 55], ['仓库', 68, 285, 43],
+        ['供应单位', 5, 285, 55], ['仓晖', 68, 285, 43],
         ['接收单位', 5, 320, 55], ['超市', 70, 320, 42],
         ['序号', 5, 400, 30], ['名称', 75, 400, 35], ['规格型号', 205, 400, 78],
         ['单位', 330, 400, 35], ['单价', 370, 400, 40], ['等级', 425, 400, 35],
@@ -35,6 +35,7 @@ describe('recognizeTransferNotice', () => {
     }
     const result = recognizeTransferNotice(scan, materials)
     expect(result).toMatchObject({ isTransferNotice: true, basis: '2026年计划', supplier: '仓库', receivingUnit: '超市' })
+    expect(result.corrections).toEqual(['供应单位：识别为“仓晖”，已建议改为“仓库”，请对照原单核对'])
     expect(result.lines).toEqual([
       { name: '粉笔', specification: '10.9型粉笔', unit: '盒', quantity: '1000', materialId: 1, locationId: 8 },
       { name: '欙皮', specification: '20型橡皮', unit: '个', quantity: '1000', materialId: 2, locationId: 8 },
@@ -50,5 +51,15 @@ describe('recognizeTransferNotice', () => {
     expect(result.lines).toHaveLength(1)
     expect(result.lines[0].materialId).toBeUndefined()
     expect(result.lines[0].quantity).toBe('')
+  })
+
+  it('only suggests a known unit when one close match exists', () => {
+    const scan = { text: '调拨接收通知单', tsv: tsv([['供应单位', 5, 285, 55], ['超巿', 68, 285, 43]]) }
+    const unique = recognizeTransferNotice(scan, materials, ['超市'])
+    expect(unique.supplier).toBe('超市')
+    expect(unique.corrections).toHaveLength(1)
+    const ambiguous = recognizeTransferNotice(scan, materials, ['超市', '超巷'])
+    expect(ambiguous.supplier).toBe('超巿')
+    expect(ambiguous.corrections).toHaveLength(0)
   })
 })
